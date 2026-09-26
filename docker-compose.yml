@@ -1,3 +1,7 @@
+# Explicit project name: never share containers or volumes with the parent
+# blc-social-audit stack, even if this repo is checked out under another name.
+name: blc-rick-seo-agent
+
 services:
   postgres:
     image: postgres:16-alpine

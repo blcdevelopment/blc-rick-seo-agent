@@ -882,6 +882,11 @@ h1 {
   gap: 18px;
 }
 
+/* Only one column (the edition runs without Search Console). */
+.enrichment-grid-single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .enrichment-grid h4 {
   font-size: 15px;
   margin-bottom: 6px;
@@ -1275,4 +1280,20 @@ h1 {
   font-family: inherit;
   color: var(--ink);
   background: var(--card);
+}
+
+/* Teaser report call-to-action (report_profile "teaser"): brand blue, never the success green. */
+.cta-block {
+  background: var(--brand-softer);
+  border-left: 3px solid var(--brand);
+}
+
+.cta-block h3 {
+  color: var(--brand-ink);
+  margin-top: 0;
+}
+
+.cta-block .btn {
+  margin-top: 4px;
+  text-decoration: none;
 }

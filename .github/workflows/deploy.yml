@@ -1,32 +1,34 @@
-name: Deploy to production
+name: Deploy (DISABLED - Rick edition not provisioned)
 
-# Continuous deployment.
+# DISABLED ON PURPOSE. Do not re-enable without a reviewed PR.
 #
-# When a commit lands on `main` (i.e. a reviewed PR is merged — direct pushes
-# are blocked by branch protection + protect-main.yml), SSH into the Linode box
-# and roll the running production stack forward to that exact commit.
+# This file was inherited from blc-social-audit, whose copy deploys the LIVE
+# production stack (ai.builderleadconverter.com) on every merge to main. This
+# repository is the separate Rick edition, which has no server, domain or
+# deploy target yet, so the workflow is locked three ways:
 #
-# CI (.github/workflows/pre-commit.yml) gates the pull request, so by the time a
-# commit reaches `main` the checks have already passed — this workflow only runs
-# *after* the merge. It does not re-run the tests; it just deploys.
+#   1. No `push` trigger: merging to main never starts it.
+#   2. The job is hard-disabled with `if: false`: a manual run is skipped.
+#   3. It reads RICK_DEPLOY_* secrets, never the parent's DEPLOY_* names, so
+#      org-level secrets for the production box can never be picked up here.
 #
-# Required repository secrets (Settings -> Secrets and variables -> Actions):
-#   DEPLOY_HOST         the box IP / hostname            (e.g. 173.255.206.170)
-#   DEPLOY_USER         SSH user on the box              (e.g. abdullah)
-#   DEPLOY_SSH_KEY      private key whose .pub is in the box's authorized_keys
-#   DEPLOY_KNOWN_HOSTS  `ssh-keyscan <host>` output, to pin the box's host key
-#   DEPLOY_PORT         optional SSH port (defaults to 22)
-# See DEPLOYMENT.md "Continuous deployment" for the full setup.
+# deploy/deploy.sh also refuses to run. When this edition gets its own host
+# and domain, lift all of these deliberately (see docs/OPERATIONS.md).
+#
+# Secrets it will need then (Settings -> Secrets and variables -> Actions):
+#   RICK_DEPLOY_HOST         the box IP / hostname
+#   RICK_DEPLOY_USER         SSH user on the box
+#   RICK_DEPLOY_SSH_KEY      private key whose .pub is in the box's authorized_keys
+#   RICK_DEPLOY_KNOWN_HOSTS  `ssh-keyscan <host>` output, to pin the box's host key
+#   RICK_DEPLOY_PORT         optional SSH port (defaults to 22)
 
 on:
-  push:
-    branches: [main]
-  workflow_dispatch: {} # allow a manual re-deploy from the Actions tab
+  workflow_dispatch: {} # manual only; the job below is disabled regardless
 
 # One deploy at a time. Never cancel a deploy mid-flight (that could leave the
 # box half-rolled); queue instead and converge on the newest commit.
 concurrency:
-  group: deploy-production
+  group: deploy-rick-seo-agent
   cancel-in-progress: false
 
 permissions:
@@ -34,7 +36,8 @@ permissions:
 
 jobs:
   deploy:
-    name: Deploy to Linode
+    name: Deploy (disabled)
+    if: ${{ false }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -43,17 +46,17 @@ jobs:
 
       - name: Deploy over SSH
         env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
-          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_HOST: ${{ secrets.RICK_DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.RICK_DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.RICK_DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.RICK_DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_PORT: ${{ secrets.RICK_DEPLOY_PORT }}
         run: |
           set -euo pipefail
 
           if [ -z "${DEPLOY_HOST}" ] || [ -z "${DEPLOY_USER}" ] \
              || [ -z "${DEPLOY_SSH_KEY}" ] || [ -z "${DEPLOY_KNOWN_HOSTS}" ]; then
-            echo "::error::Missing deploy secrets. Set DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY, DEPLOY_KNOWN_HOSTS."
+            echo "::error::Missing deploy secrets. Set RICK_DEPLOY_HOST, RICK_DEPLOY_USER, RICK_DEPLOY_SSH_KEY, RICK_DEPLOY_KNOWN_HOSTS."
             exit 1
           fi
 

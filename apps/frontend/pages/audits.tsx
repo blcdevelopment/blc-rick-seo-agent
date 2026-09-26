@@ -1,4 +1,4 @@
-import { useAuth } from "@clerk/nextjs";
+import { useApiToken } from "../lib/auth";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
@@ -54,7 +54,7 @@ function scoreOf(audit: AuditListItem, field: ScoreField): number {
 }
 
 export default function AuditsHistoryPage() {
-  const { getToken } = useAuth();
+  const { getToken } = useApiToken();
   const [audits, setAudits] = useState<AuditListItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);

@@ -1287,3 +1287,38 @@ td span {
   margin: 0.12in 0 0.06in;
   text-transform: uppercase;
 }
+
+/* ---------- Teaser call-to-action (report_profile "teaser") ---------- */
+/* The two-column selector matches `.two-column article`'s specificity, so the summary card
+   keeps the accent too. */
+.teaser-cta,
+.two-column article.teaser-cta {
+  background: #f5f9fd;
+  border: 1px solid #b9d6ea;
+  border-left: 3px solid var(--primary);
+  border-radius: 10px;
+  break-inside: avoid;
+  padding: 0.2in;
+}
+
+.teaser-cta h3 {
+  margin-top: 0;
+}
+
+.teaser-cta-button {
+  background: var(--primary);
+  border-radius: 999px;
+  color: #fff;
+  display: inline-block;
+  font-weight: 700;
+  margin-top: 0.08in;
+  padding: 0.07in 0.2in;
+  text-decoration: none;
+}
+
+.teaser-cta-url {
+  color: #475467;
+  font-size: 8.5pt;
+  margin: 0.06in 0 0;
+  word-break: break-all;
+}

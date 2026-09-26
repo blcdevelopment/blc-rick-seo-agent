@@ -90,7 +90,7 @@ def test_create_and_read_audit_lifecycle(monkeypatch) -> None:
     monkeypatch.setattr(
         audit_routes,
         "get_settings",
-        lambda: SimpleNamespace(audit_enqueue_enabled=False),
+        lambda: SimpleNamespace(audit_enqueue_enabled=False, public_audits_enabled=False),
     )
     app.dependency_overrides[get_db_session] = override_db
 
@@ -354,7 +354,9 @@ def test_docx_endpoint_generates_editable_report(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(
         audit_routes,
         "get_settings",
-        lambda: SimpleNamespace(local_report_storage_dir=tmp_path),
+        lambda: SimpleNamespace(
+            local_report_storage_dir=tmp_path, report_profile="full", search_console_enabled=True
+        ),
     )
     app.dependency_overrides[get_db_session] = override_db
     try:

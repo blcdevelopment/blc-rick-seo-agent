@@ -26,7 +26,7 @@ class DocxRenderResult(BaseModel):
 
 
 def render_audit_docx(job: Any, result: Any, settings: Settings) -> DocxRenderResult:
-    payload = compose_report_payload(job, result)
+    payload = compose_report_payload(job, result, settings=settings)
     output_path = _output_path(settings.local_report_storage_dir, str(job.id))
     return render_report_docx(payload, output_path=output_path)
 
@@ -64,8 +64,16 @@ def render_report_docx(payload: ReportPayload, *, output_path: Path) -> DocxRend
     )
 
 
+# Replaces the "How to use it" advice when the payload is a teaser (report_profile.py).
+_TEASER_SECTION_GUIDE = (
+    "What happens next: Each finding shows what the audit found and why it matters. The "
+    "fixes, in priority order, are covered in a short meeting (see Next Steps)."
+)
+
+
 def _document_xml(payload: ReportPayload) -> str:
     parts: list[str] = []
+    teaser = payload.report_profile == "teaser"
     metadata = payload.metadata
     # The one shared combined predicate (computed in compose_report_payload): "website_only"
     # (failed social collection) still carries a score; the title must not promise a social
@@ -127,8 +135,10 @@ def _document_xml(payload: ReportPayload) -> str:
             )
             parts.append(
                 _paragraph(
-                    "How to use it: Turn each recommendation into a site update, then rerun "
-                    "the audit to confirm the same issue no longer appears."
+                    _TEASER_SECTION_GUIDE
+                    if teaser
+                    else "How to use it: Turn each recommendation into a site update, then "
+                    "rerun the audit to confirm the same issue no longer appears."
                 )
             )
         elif section.id == "uxui":
@@ -140,8 +150,10 @@ def _document_xml(payload: ReportPayload) -> str:
             )
             parts.append(
                 _paragraph(
-                    "How to use it: Prioritize changes that make the primary action easier to "
-                    "see, easier to trust, and easier to complete."
+                    _TEASER_SECTION_GUIDE
+                    if teaser
+                    else "How to use it: Prioritize changes that make the primary action "
+                    "easier to see, easier to trust, and easier to complete."
                 )
             )
 
@@ -173,16 +185,23 @@ def _document_xml(payload: ReportPayload) -> str:
 
     parts.extend(_external_seo_xml(payload))
 
-    parts.append(_heading("Lead Generation Roadmap", 1))
-    for tier in payload.roadmap:
-        parts.append(_heading(tier.label, 2))
-        if not tier.recommendations:
-            parts.append(_paragraph("No recommendations generated for this tier."))
-            continue
-        for recommendation in tier.recommendations:
-            parts.append(_paragraph(recommendation.title, "Strong"))
-            for item in recommendation.action_items:
-                parts.append(_paragraph(item))
+    if teaser and payload.cta is not None:
+        parts.append(_heading("Next Steps", 1))
+        parts.append(_paragraph(payload.cta.message))
+        parts.append(_paragraph(payload.cta.label, "Strong"))
+        if payload.cta.url:
+            parts.append(_paragraph(payload.cta.url))
+    else:
+        parts.append(_heading("Lead Generation Roadmap", 1))
+        for tier in payload.roadmap:
+            parts.append(_heading(tier.label, 2))
+            if not tier.recommendations:
+                parts.append(_paragraph("No recommendations generated for this tier."))
+                continue
+            for recommendation in tier.recommendations:
+                parts.append(_paragraph(recommendation.title, "Strong"))
+                for item in recommendation.action_items:
+                    parts.append(_paragraph(item))
 
     parts.append(_heading("Appendix", 1))
     parts.append(_paragraph(payload.appendix.scoring_note))
@@ -282,9 +301,12 @@ def _external_seo_xml(payload: ReportPayload) -> list[str]:
     )
     parts.append(
         _paragraph(
-            "How to use it: Fix high-severity site health issues first, especially errors on "
-            "important service, location, or lead pages. Use the example URLs as the starting "
-            "list for the web team or CMS editor."
+            "Why it matters: High-severity issues are the ones most likely to cost visitors, "
+            "especially on important service, location, or lead pages."
+            if payload.report_profile == "teaser"
+            else "How to use it: Fix high-severity site health issues first, especially errors "
+            "on important service, location, or lead pages. Use the example URLs as the "
+            "starting list for the web team or CMS editor."
         )
     )
     if technical_available and technical.issues:
@@ -296,7 +318,13 @@ def _external_seo_xml(payload: ReportPayload) -> list[str]:
                 )
             )
             parts.append(
-                _paragraph(f"{issue.summary} {issue.why_it_matters} {issue.recommended_fix}")
+                _paragraph(
+                    " ".join(
+                        part
+                        for part in (issue.summary, issue.why_it_matters, issue.recommended_fix)
+                        if part
+                    )
+                )
             )
             if issue.examples:
                 shown = issue.examples[:4]
@@ -323,6 +351,10 @@ def _external_seo_xml(payload: ReportPayload) -> list[str]:
                 f"does not make clean-or-broken technical SEO claims.{reason}"
             )
         )
+
+    # Search Console blocks render only when the edition runs with it.
+    if not payload.show_search_console:
+        return parts
 
     parts.append(_heading("Google Search Performance", 1))
     parts.append(
@@ -483,7 +515,14 @@ def _combined_xml(payload: ReportPayload) -> list[str]:
                     parts.append(_bullet(_social_platform_line(p)))
             findings = [f for f in (social.get("findings") or []) if isinstance(f, dict)]
             if findings:
-                parts.append(_heading("What to improve", 2))
+                parts.append(
+                    _heading(
+                        "What we found"
+                        if payload.report_profile == "teaser"
+                        else "What to improve",
+                        2,
+                    )
+                )
                 for f in findings:
                     label = f.get("label", "")
                     if f.get("metric"):

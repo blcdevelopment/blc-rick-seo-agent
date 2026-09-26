@@ -28,6 +28,9 @@
     </style>
   </head>
   <body style="--primary: {{ brand.primary_color }}; --accent: {{ brand.accent_color }};">
+    {# Teaser profile (report_profile.py): the payload carries no fixes, so every block that
+       would print one shows the booking call-to-action (payload.cta) or neutral copy instead. #}
+    {% set teaser = payload.report_profile == "teaser" %}
     <div
       class="running-metadata"
       data-domain="{{ payload.metadata.site_domain }}"
@@ -97,7 +100,11 @@
             </div>
           {% endif %}
         </dl>
+        {% if teaser %}
+        <p class="cover-footer">Prepared by {{ brand.name }}.</p>
+        {% else %}
         <p class="cover-footer">Prepared for internal BLC review and prospect-facing follow-up.</p>
+        {% endif %}
       </div>
     </section>
 
@@ -110,12 +117,18 @@
         <li><a href="#seo">SEO Findings</a></li>
         <li><a href="#uxui">UX/UI Findings</a></li>
         <li><a href="#technical-seo">Site Health</a></li>
+        {% if payload.show_search_console %}
         <li><a href="#search-performance">Search Performance</a></li>
+        {% endif %}
         {% if payload.accessibility_advisory_section.status == "complete" %}
         <li><a href="#accessibility">Accessibility (Advisory)</a></li>
         {% endif %}
         <li><a href="#local-context">Local Context</a></li>
+        {% if teaser %}
+        <li><a href="#next-steps">Next Steps</a></li>
+        {% else %}
         <li><a href="#roadmap">Roadmap</a></li>
+        {% endif %}
         <li><a href="#appendix">Appendix</a></li>
         <li><a href="#visual-analytics">Visual Analytics</a></li>
         {% if payload.get('social_audit') %}
@@ -175,6 +188,17 @@
             {% endfor %}
           </ul>
         </article>
+        {% if teaser %}
+        <article class="teaser-cta">
+          <h3>Get the fixes</h3>
+          <p>{{ payload.cta.message }}</p>
+          {% if payload.cta.url %}
+            <a class="teaser-cta-button" href="{{ payload.cta.url }}">{{ payload.cta.label }}</a>
+          {% else %}
+            <p><strong>{{ payload.cta.label }}</strong></p>
+          {% endif %}
+        </article>
+        {% else %}
         <article>
           <h3>Top Recommendations</h3>
           <ul class="plain-list">
@@ -188,6 +212,7 @@
             {% endfor %}
           </ul>
         </article>
+        {% endif %}
       </div>
     </section>
 
@@ -228,6 +253,15 @@
                   or clicked in search results. Start with high and medium findings first.
                 </p>
               </article>
+              {% if teaser %}
+              <article>
+                <h3>What happens next</h3>
+                <p>
+                  Each finding shows what the audit found and why it matters. The fixes, in
+                  priority order, are covered in a short meeting (see Next Steps).
+                </p>
+              </article>
+              {% else %}
               <article>
                 <h3>How to use it</h3>
                 <p>
@@ -235,6 +269,7 @@
                   the same issue no longer appears in the evidence trail.
                 </p>
               </article>
+              {% endif %}
             {% else %}
               <article>
                 <h3>How to read this section</h3>
@@ -243,6 +278,15 @@
                   understand the offer, or take the next step.
                 </p>
               </article>
+              {% if teaser %}
+              <article>
+                <h3>What happens next</h3>
+                <p>
+                  Each finding shows what the audit found and why it matters. The fixes, in
+                  priority order, are covered in a short meeting (see Next Steps).
+                </p>
+              </article>
+              {% else %}
               <article>
                 <h3>How to use it</h3>
                 <p>
@@ -250,15 +294,24 @@
                   and easier to complete on key landing pages.
                 </p>
               </article>
+              {% endif %}
             {% endif %}
           </div>
 
           <h3>Findings</h3>
+          {% if teaser %}
+          <p class="helper-copy">
+            Severity guide: <strong>high</strong> = likely costing visitors or visibility now;
+            <strong>medium</strong> = a real weakness; <strong>low</strong> = worth improving;
+            <strong>info</strong> = context only, nothing is broken.
+          </p>
+          {% else %}
           <p class="helper-copy">
             Severity guide: <strong>high</strong> = fix first, it is likely costing visitors
             or visibility; <strong>medium</strong> = fix soon; <strong>low</strong> = worth
             improving; <strong>info</strong> = context only, nothing is broken.
           </p>
+          {% endif %}
           <div class="finding-list">
             {% for finding in section.findings %}
               <article class="finding-card severity-{{ finding.severity }}">
@@ -289,7 +342,7 @@
                 {% endif %}
                 {% if finding.location_urls %}
                   <div class="issue-locations">
-                    <p class="location-label">{{ finding.location_label or "Where to start" }}:</p>
+                    <p class="location-label">{{ finding.location_label or ("Where it was found" if teaser else "Where to start") }}:</p>
                     <ul class="url-list">
                       {% for url in finding.location_urls %}
                         <li>{{ url }}</li>
@@ -352,9 +405,20 @@
             blocked pages, missing page labels, duplicate metadata, and image text gaps
             that can stop Google or visitors from getting the right page. Every count
             below comes from URLs this audit actually checked, and each issue lists
-            example URLs so the fix can start at an exact address.
+            {% if teaser %}example URLs where it was found.{% else %}example URLs so the fix can start at an exact address.{% endif %}
           </p>
         </article>
+        {% if teaser %}
+        <article>
+          <h3>Why it matters</h3>
+          <p>
+            High-severity issues are the ones most likely to cost you visitors, especially
+            on important service, location, or lead pages. In lead-generation terms: pages
+            search engines cannot reach or read cannot earn the calls and form fills that
+            grow the business.
+          </p>
+        </article>
+        {% else %}
         <article>
           <h3>How to use it</h3>
           <p>
@@ -364,6 +428,7 @@
             reach or read cannot earn the calls and form fills that grow the business.
           </p>
         </article>
+        {% endif %}
       </div>
       {% for note in payload.technical_seo_section.notes %}
         <p class="muted">Coverage note: {{ note }}</p>
@@ -384,7 +449,9 @@
               <div class="issue-guidance">
                 <p><span class="guide-label">What it means</span>{{ issue.summary }}</p>
                 <p><span class="guide-label">Why it matters</span>{{ issue.why_it_matters }}</p>
+                {% if issue.recommended_fix %}
                 <p><span class="guide-label">Recommended fix</span>{{ issue.recommended_fix }}</p>
+                {% endif %}
               </div>
               {% if issue.examples %}
                 {% set shown = issue.examples[:4] %}
@@ -422,6 +489,8 @@
       {% endif %}
     </section>
 
+    {# Search Console blocks render only when the edition runs with it (settings.search_console_enabled). #}
+    {% if payload.show_search_console %}
     <section class="page-section" id="search-performance">
       <p class="eyebrow">Google Search Performance</p>
       <h2>Search Console opportunities</h2>
@@ -579,7 +648,9 @@
         <h3>High-impression, low-CTR pages</h3>
         <p class="helper-copy">
           These pages appear in Google often, but searchers are not clicking enough.
+          {% if not teaser %}
           Improve the page title, meta description, and offer clarity first.
+          {% endif %}
         </p>
         <table class="compact-table">
           <thead>
@@ -671,7 +742,11 @@
           "Canonical chosen by Google" is the page version Google decided to index — if it
           differs from the page address, Google is treating another URL as the main copy.
           {% endif %}
+          {% if teaser %}
+          A page that is not on Google cannot bring in search visitors, whatever its content quality.
+          {% else %}
           If a page is not on Google, fix that before judging its content quality.
+          {% endif %}
         </p>
         <table class="compact-table">
           <thead>
@@ -719,6 +794,7 @@
         </p>
       {% endif %}
     </section>
+    {% endif %}
 
     {% if payload.accessibility_advisory_section.status == "complete" %}
     {% set a11y = payload.accessibility_advisory_section %}
@@ -808,9 +884,13 @@
             searchers click the map results more often than the standard listings. This audit
             checks the on-page signals that support local ranking (business-identity and
             address structured data, a visible address, a Maps/Profile link, and service-area
+            {% if teaser %}
+            markup — see the SEO findings). It cannot see your Business Profile itself.
+            {% else %}
             markup — see the SEO findings). It cannot see your Business Profile itself, so the
             next step is to claim and complete it, gather reviews, and keep your name, address,
             and phone identical everywhere.
+            {% endif %}
           </p>
         </article>
         <article>
@@ -819,15 +899,34 @@
             Google's AI Overviews are reducing clicks, but mostly on broad informational
             searches where a summary answers the question. Your highest-value searches are
             local and high-intent ("builder near me", "kitchen remodel [city]") and the Map
+            {% if teaser %}
+            pack — these are far less substitutable by a summary.
+            {% else %}
             pack — these are far less substitutable by a summary. The defensive plays are the
             same ones that win locally: own the local pack and Business Profile, earn reviews,
             and give clear, well-structured answers (headings, FAQs, and schema) so answer
             engines can cite you.
+            {% endif %}
           </p>
         </article>
       </div>
     </section>
 
+    {% if teaser %}
+    <section class="page-section" id="next-steps">
+      <p class="eyebrow">Next Steps</p>
+      <h2>Turn these findings into leads</h2>
+      <div class="teaser-cta">
+        <p>{{ payload.cta.message }}</p>
+        {% if payload.cta.url %}
+          <a class="teaser-cta-button" href="{{ payload.cta.url }}">{{ payload.cta.label }}</a>
+          <p class="teaser-cta-url">{{ payload.cta.url }}</p>
+        {% else %}
+          <p><strong>{{ payload.cta.label }}</strong></p>
+        {% endif %}
+      </div>
+    </section>
+    {% else %}
     <section class="page-section" id="roadmap">
       <p class="eyebrow">Action Roadmap</p>
       <h2>Prioritized lead generation roadmap</h2>
@@ -865,6 +964,7 @@
         {% endfor %}
       </div>
     </section>
+    {% endif %}
 
     <section class="page-section" id="appendix">
       <p class="eyebrow">Appendix</p>
@@ -994,7 +1094,7 @@
 
       <p class="muted">
         The internal scoring trail is stored with the audit result for QA, but this client-facing
-        report shows the interpreted findings and fixes instead of raw rule identifiers.
+        report shows the interpreted findings{% if not teaser %} and fixes{% endif %} instead of raw rule identifiers.
       </p>
     </section>
 
@@ -1152,6 +1252,7 @@
         </div>
       </div>
 
+      {% if payload.show_search_console %}
       <h3>Search visibility (Google Search Console)</h3>
       {% set sp = payload.search_performance_section %}
       {% if sp.status == "complete" %}
@@ -1247,6 +1348,7 @@
           Connect a verified property and rerun enrichment to populate it.
         </p>
       {% endif %}
+      {% endif %}
     </section>
 
     {# ----- Combined audit: appended social media + overall readiness sections ----- #}
@@ -1310,7 +1412,7 @@
         {% endif %}
 
         {% if social.findings %}
-        <h3 style="margin-top:8px;">What to improve</h3>
+        <h3 style="margin-top:8px;">{% if teaser %}What we found{% else %}What to improve{% endif %}</h3>
         <ul>
           {% for f in social.findings %}
           {# Metric rendered with an em-dash, not wrapped in parens — the metric string already

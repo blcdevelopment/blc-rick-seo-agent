@@ -37,6 +37,8 @@
 </style>
 </head>
 <body>
+  {# Teaser profile (report_profile.py): no fixes in the payload; payload.cta replaces them. #}
+  {% set teaser = payload.report_profile == 'teaser' %}
   <div class="header">
     <div class="brand-mark">
       {% if brand.logo_exists %}<img src="{{ brand.logo_uri }}" alt="{{ brand.name }}" />{% else %}<span class="brand-name">{{ brand.placeholder_fallback }}</span>{% endif %}
@@ -82,19 +84,19 @@
   </div>
 
   {% if payload.findings %}
-  <h2>What to improve</h2>
+  <h2>{% if teaser %}What we found{% else %}What to improve{% endif %}</h2>
   {% for f in payload.findings %}
   <div class="finding">
     <div class="ttl">{{ f.label }}{% if f.metric %} <span class="muted" style="font-weight:400">— {{ f.metric }}</span>{% endif %}</div>
     <div>
       <span class="pill imp-{{ f.impact }}">{{ f.impact }} impact</span>
-      <span class="pill tier">{{ f.tier|replace('_', ' ') }}</span>
+      {% if f.tier %}<span class="pill tier">{{ f.tier|replace('_', ' ') }}</span>{% endif %}
     </div>
     {% if f.narrative %}<div>{{ f.narrative }}</div>{% elif f.remediation %}<div class="muted">{{ f.remediation }}</div>{% endif %}
   </div>
   {% endfor %}
   {% else %}
-  <h2>What to improve</h2>
+  <h2>{% if teaser %}What we found{% else %}What to improve{% endif %}</h2>
   <p class="muted">No major issues detected — the audited profiles meet the rubric's key checks.</p>
   {% endif %}
 
@@ -175,6 +177,19 @@
   {% else %}
   <h2>No social data</h2>
   <p class="muted">Social data could not be collected (status: {{ payload.status }}). Confirm the handles are public and that the Apify token is configured, then re-run.</p>
+  {% endif %}
+
+  {% if teaser %}
+  <h2>Next steps</h2>
+  <div class="finding" style="border-left-color: var(--primary);">
+    <p>{{ payload.cta.message }}</p>
+    {% if payload.cta.url %}
+    <p><a href="{{ payload.cta.url }}" style="color: var(--primary); font-weight: 700;">{{ payload.cta.label }}</a></p>
+    <p class="muted">{{ payload.cta.url }}</p>
+    {% else %}
+    <p><strong>{{ payload.cta.label }}</strong></p>
+    {% endif %}
+  </div>
   {% endif %}
 
   <div class="footer">{{ brand.name }} · Social Media Audit · Generated {{ payload.generated_date }}</div>

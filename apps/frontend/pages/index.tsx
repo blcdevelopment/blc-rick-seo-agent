@@ -1,4 +1,4 @@
-import { useAuth } from "@clerk/nextjs";
+import { PUBLIC_AUDITS, useApiToken } from "../lib/auth";
 import { useRouter } from "next/router";
 import { FormEvent, useState } from "react";
 
@@ -48,7 +48,7 @@ function extractHandle(raw: string): string {
 
 export default function SubmitAuditPage() {
   const router = useRouter();
-  const { getToken } = useAuth();
+  const { getToken } = useApiToken();
   const [url, setUrl] = useState("");
   const [niche, setNiche] = useState("");
   const [targetAudience, setTargetAudience] = useState("");
@@ -152,7 +152,9 @@ export default function SubmitAuditPage() {
           readiness score. Niche and target audience are optional.
         </p>
 
-        <SearchConsoleIntegration />
+        {/* Connecting a Google account is an operator action; an anonymous visitor's
+            connection would expose their Search Console data to anyone auditing that site. */}
+        {!PUBLIC_AUDITS && <SearchConsoleIntegration />}
 
         <form className="card form" onSubmit={handleSubmit} noValidate>
           {apiError && (
@@ -273,109 +275,112 @@ export default function SubmitAuditPage() {
             </div>
           </details>
 
-          <details className="brand-panel">
-            <summary>White-label branding (optional, applies to the PDF report)</summary>
-            <p className="muted">
-              Override the report logo, name, and colours for a prospect-facing PDF. Leave any
-              field blank to keep the default BLC brand.
-            </p>
-            {brandError && (
-              <p className="field-error" role="alert">
-                {brandError}
+          {/* White-label branding is operator-only; the public API ignores it. */}
+          {!PUBLIC_AUDITS && (
+            <details className="brand-panel">
+              <summary>White-label branding (optional, applies to the PDF report)</summary>
+              <p className="muted">
+                Override the report logo, name, and colours for a prospect-facing PDF. Leave any
+                field blank to keep the default BLC brand.
               </p>
-            )}
+              {brandError && (
+                <p className="field-error" role="alert">
+                  {brandError}
+                </p>
+              )}
 
-            <div className="field">
-              <label htmlFor="brand_name">Brand name</label>
-              <input
-                id="brand_name"
-                name="brand_name"
-                type="text"
-                placeholder="e.g. Acme Marketing"
-                value={brandName}
-                maxLength={120}
-                onChange={(event) => setBrandName(event.target.value)}
-                disabled={submitting}
-              />
-            </div>
+              <div className="field">
+                <label htmlFor="brand_name">Brand name</label>
+                <input
+                  id="brand_name"
+                  name="brand_name"
+                  type="text"
+                  placeholder="e.g. Acme Marketing"
+                  value={brandName}
+                  maxLength={120}
+                  onChange={(event) => setBrandName(event.target.value)}
+                  disabled={submitting}
+                />
+              </div>
 
-            <div className="field">
-              <label htmlFor="brand_short_name">Short name</label>
-              <input
-                id="brand_short_name"
-                name="brand_short_name"
-                type="text"
-                placeholder="e.g. Acme"
-                value={brandShortName}
-                maxLength={40}
-                onChange={(event) => setBrandShortName(event.target.value)}
-                disabled={submitting}
-              />
-            </div>
+              <div className="field">
+                <label htmlFor="brand_short_name">Short name</label>
+                <input
+                  id="brand_short_name"
+                  name="brand_short_name"
+                  type="text"
+                  placeholder="e.g. Acme"
+                  value={brandShortName}
+                  maxLength={40}
+                  onChange={(event) => setBrandShortName(event.target.value)}
+                  disabled={submitting}
+                />
+              </div>
 
-            <div className="field">
-              <label htmlFor="brand_product_name">Report product name</label>
-              <input
-                id="brand_product_name"
-                name="brand_product_name"
-                type="text"
-                placeholder='Cover/title branding (default "Gooch")'
-                value={brandProductName}
-                maxLength={60}
-                onChange={(event) => setBrandProductName(event.target.value)}
-                disabled={submitting}
-              />
-            </div>
+              <div className="field">
+                <label htmlFor="brand_product_name">Report product name</label>
+                <input
+                  id="brand_product_name"
+                  name="brand_product_name"
+                  type="text"
+                  placeholder='Cover/title branding (default "Gooch")'
+                  value={brandProductName}
+                  maxLength={60}
+                  onChange={(event) => setBrandProductName(event.target.value)}
+                  disabled={submitting}
+                />
+              </div>
 
-            <div className="field">
-              <label htmlFor="brand_primary_color">Primary colour (hex)</label>
-              <input
-                id="brand_primary_color"
-                name="brand_primary_color"
-                type="text"
-                placeholder="#1a3a5c"
-                value={brandPrimaryColor}
-                maxLength={7}
-                onChange={(event) => {
-                  setBrandPrimaryColor(event.target.value);
-                  if (brandError) setBrandError(null);
-                }}
-                disabled={submitting}
-              />
-            </div>
+              <div className="field">
+                <label htmlFor="brand_primary_color">Primary colour (hex)</label>
+                <input
+                  id="brand_primary_color"
+                  name="brand_primary_color"
+                  type="text"
+                  placeholder="#1a3a5c"
+                  value={brandPrimaryColor}
+                  maxLength={7}
+                  onChange={(event) => {
+                    setBrandPrimaryColor(event.target.value);
+                    if (brandError) setBrandError(null);
+                  }}
+                  disabled={submitting}
+                />
+              </div>
 
-            <div className="field">
-              <label htmlFor="brand_accent_color">Accent colour (hex)</label>
-              <input
-                id="brand_accent_color"
-                name="brand_accent_color"
-                type="text"
-                placeholder="#f5a623"
-                value={brandAccentColor}
-                maxLength={7}
-                onChange={(event) => {
-                  setBrandAccentColor(event.target.value);
-                  if (brandError) setBrandError(null);
-                }}
-                disabled={submitting}
-              />
-            </div>
+              <div className="field">
+                <label htmlFor="brand_accent_color">Accent colour (hex)</label>
+                <input
+                  id="brand_accent_color"
+                  name="brand_accent_color"
+                  type="text"
+                  placeholder="#f5a623"
+                  value={brandAccentColor}
+                  maxLength={7}
+                  onChange={(event) => {
+                    setBrandAccentColor(event.target.value);
+                    if (brandError) setBrandError(null);
+                  }}
+                  disabled={submitting}
+                />
+              </div>
 
-            <div className="field">
-              <label htmlFor="brand_logo_url">Logo URL</label>
-              <input
-                id="brand_logo_url"
-                name="brand_logo_url"
-                type="url"
-                inputMode="url"
-                placeholder="https://cdn.example.com/logo.png"
-                value={brandLogoUrl}
-                maxLength={1000}
-                onChange={(event) => setBrandLogoUrl(event.target.value)}
-                disabled={submitting}
-              />
-            </div>
-          </details>
+              <div className="field">
+                <label htmlFor="brand_logo_url">Logo URL</label>
+                <input
+                  id="brand_logo_url"
+                  name="brand_logo_url"
+                  type="url"
+                  inputMode="url"
+                  placeholder="https://cdn.example.com/logo.png"
+                  value={brandLogoUrl}
+                  maxLength={1000}
+                  onChange={(event) => setBrandLogoUrl(event.target.value)}
+                  disabled={submitting}
+                />
+              </div>
+            </details>
+          )}
 
           <div className="form-actions">
             <button type="submit" className="btn btn-primary" disabled={submitting}>

@@ -1,4 +1,8 @@
-# Production stack for ai.builderleadconverter.com (single Linode).
+# Production stack for the Rick edition (blc-rick-seo-agent). NOT DEPLOYED YET.
+#
+# `blc-rick-seo-agent.invalid` below is a placeholder on the reserved `.invalid`
+# TLD (it can never resolve); replace it with this edition's own subdomain once
+# provisioned. It must never be the parent's ai.builderleadconverter.com.
 #
 #   docker compose -f docker-compose.prod.yml build
 #   docker compose -f docker-compose.prod.yml up -d
@@ -9,6 +13,12 @@
 #   * only Caddy exposes ports (80/443); Postgres/Redis/API stay on the internal network
 #   * worker runs at --concurrency=1 (one Chromium at a time) for the 4 GB box
 #   * secrets come from .env (gitignored); never commit it
+
+# Explicit project name, so this stack's containers and volumes (postgres_data,
+# storage, ...) can never resolve to the parent's `blc-social-audit` project,
+# whose name comes from its checkout directory.
+name: blc-rick-seo-agent
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -50,7 +60,7 @@ services:
       LOCAL_REPORT_STORAGE_DIR: /app/storage/reports
       LOCAL_SCREENSHOT_STORAGE_DIR: /app/storage/screenshots
       # Same-origin in prod (UI + /api on one domain), but keep CORS correct anyway.
-      API_CORS_ORIGINS: https://ai.builderleadconverter.com
+      API_CORS_ORIGINS: https://blc-rick-seo-agent.invalid
       # Fail fast if unset: an empty CLERK_ISSUER silently DISABLES API auth
       # (apps/api/auth.py), which must never happen in production.
       CLERK_ISSUER: ${CLERK_ISSUER:?set CLERK_ISSUER in .env - empty disables API auth}
@@ -101,7 +111,7 @@ services:
       context: ./apps/frontend
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_API_BASE_URL: https://ai.builderleadconverter.com/api
+        NEXT_PUBLIC_API_BASE_URL: https://blc-rick-seo-agent.invalid/api
         NEXT_PUBLIC_APP_NAME: "BLC Website Audit"
         # Baked at build time — must be set in .env BEFORE `docker compose build`.
         NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:?set NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY in .env}

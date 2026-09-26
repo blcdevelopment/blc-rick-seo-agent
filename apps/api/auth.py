@@ -39,11 +39,18 @@ def _extract_token(request: Request) -> str | None:
 def require_user(request: Request) -> str | None:
     """FastAPI dependency: return the Clerk user id (``sub``) or raise 401.
 
-    Returns ``None`` and allows the request when Clerk is not configured.
+    Returns ``None`` and allows the request when Clerk is not configured — except on a
+    production public deployment (``PUBLIC_AUDITS_ENABLED``), where the operator endpoints
+    this guards must never fall open to the internet: there it answers 403 instead.
     """
     settings = get_settings()
     issuer = settings.clerk_issuer.rstrip("/")
     if not issuer:
+        if settings.public_audits_enabled and settings.app_env.strip().lower() == "production":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Operator endpoints are disabled on this public deployment.",
+            )
         return None  # auth disabled (no CLERK_ISSUER set)
 
     token = _extract_token(request)
@@ -93,3 +100,15 @@ def require_user(request: Request) -> str | None:
             headers=_UNAUTHORIZED,
         )
     return sub
+
+
+def require_visitor(request: Request) -> str | None:
+    """FastAPI dependency for the endpoints a visitor needs to run an audit and read its report.
+
+    With ``PUBLIC_AUDITS_ENABLED`` (the Rick edition) they are open: visitors never sign in, and
+    the unguessable job UUID in the report URL is the only key to a report, like a share link.
+    Otherwise they keep the normal Clerk check.
+    """
+    if get_settings().public_audits_enabled:
+        return None
+    return require_user(request)

@@ -37,6 +37,7 @@ def _settings(**overrides) -> SimpleNamespace:
         "crawler_user_agent": "test-agent",
         "crawler_allow_private_hosts": True,
         "screaming_frog_enabled": False,
+        "search_console_enabled": True,
     }
     values.update(overrides)
     return SimpleNamespace(**values)

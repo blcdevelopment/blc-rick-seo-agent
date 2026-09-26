@@ -7,8 +7,15 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from apps.shared.config import Settings, get_settings
 from apps.worker.stages.ai_visibility.report import build_ai_visibility_report_data
 from apps.worker.stages.benchmarking.report import build_benchmark_report_data
+from apps.worker.stages.report_profile import (
+    FALLBACK_SUMMARY_ADVICE,
+    ReportCta,
+    ReportProfile,
+    apply_report_profile,
+)
 from apps.worker.stages.social.report import build_social_report_data
 
 JsonDict = dict[str, Any]
@@ -669,9 +676,20 @@ class ReportPayload(BaseModel):
     # Enrichment: AI Visibility (Semrush AI Visibility Toolkit — on-demand, default None => not
     # rendered; a report without AI-visibility data is byte-identical). Presentation only.
     ai_visibility: JsonDict | None = None
+    # Rendering profile, set in ONE place (report_profile.apply_report_profile) so the PDF, DOCX
+    # and UI can never disagree about it. A "teaser" payload carries no fixes and every surface
+    # renders `cta` in their place; "full" (the default) leaves the payload unchanged.
+    report_profile: ReportProfile = "full"
+    cta: ReportCta | None = None
+    # False when the edition runs without Google Search Console (settings.search_console_enabled):
+    # the PDF, DOCX and UI then hide every Search Console block. Computed once, here.
+    show_search_console: bool = True
 
 
-def compose_report_payload(job: Any, result: Any) -> ReportPayload:
+def compose_report_payload(
+    job: Any, result: Any, *, settings: Settings | None = None
+) -> ReportPayload:
+    settings = settings or get_settings()
     crawled_pages = _dict(result.crawled_pages)
     score_breakdown = _dict(result.score_breakdown)
     commentary = _dict(result.commentary)
@@ -748,11 +766,16 @@ def compose_report_payload(job: Any, result: Any) -> ReportPayload:
     # and the report is byte-identical.
     ai_visibility = build_ai_visibility_report_data(score_breakdown.get("ai_visibility"))
 
-    return ReportPayload(
+    payload = ReportPayload(
         metadata=metadata,
-        scores=_score_cards(result, score_breakdown, combined_complete=combined_complete),
+        scores=_score_cards(
+            result,
+            score_breakdown,
+            combined_complete=combined_complete,
+            search_console=settings.search_console_enabled,
+        ),
         executive_summary=_executive_summary(commentary),
-        sections=sections,
+        sections=_without_search_console_rules(sections, settings),
         roadmap=_roadmap(sections),
         validation_summary=_validation_summary(_dict(result.validation_log)),
         pagespeed_summary=_pagespeed_summary(_dict(result.psi_facts)),
@@ -765,13 +788,16 @@ def compose_report_payload(job: Any, result: Any) -> ReportPayload:
         ),
         crawl_summary=_crawl_summary(crawled_pages),
         website_scope=_website_scope(external_seo_facts, crawled_pages, _dict(result.seo_facts)),
-        appendix=_appendix(score_breakdown),
+        appendix=_appendix(score_breakdown, search_console=settings.search_console_enabled),
         social_audit=social_audit,
         overall_readiness=overall_readiness,
         combined_complete=combined_complete,
         benchmark=benchmark,
         ai_visibility=ai_visibility,
+        show_search_console=settings.search_console_enabled,
     )
+    # Last step, shared by every surface: the teaser profile strips the fixes here.
+    return apply_report_profile(payload, settings)
 
 
 def _compose_section(
@@ -807,7 +833,11 @@ def _compose_section(
 
 
 def _score_cards(
-    result: Any, score_breakdown: JsonDict, *, combined_complete: bool
+    result: Any,
+    score_breakdown: JsonDict,
+    *,
+    combined_complete: bool,
+    search_console: bool = True,
 ) -> list[ScoreCard]:
     scores = _dict(score_breakdown.get("scores"))
     composite = _dict(score_breakdown.get("composite"))
@@ -865,7 +895,11 @@ def _score_cards(
             band_label=_score_band_label(int(result.seo_score)),
             description=(
                 "This score comes from checks for search visibility, metadata, site health, "
-                "indexability, Search Console opportunity, PageSpeed, links, and schema. "
+                + (
+                    "indexability, Search Console opportunity, PageSpeed, links, and schema. "
+                    if search_console
+                    else "indexability, PageSpeed, links, and schema. "
+                )
                 + _score_calculation_sentence("seo", score_breakdown, int(result.seo_score))
             ).strip(),
         ),
@@ -1047,8 +1081,7 @@ def _executive_summary(commentary: JsonDict) -> str:
         return summary
     return (
         "The audit produced deterministic SEO, UX/UI, and Lead Generation Readiness scores. "
-        "Use the prioritized roadmap and score breakdown to address the highest-confidence "
-        "lead generation opportunities first."
+        + FALLBACK_SUMMARY_ADVICE
     )
 
 
@@ -1179,7 +1212,31 @@ def _opportunities_for_section(
     return [rule for rule in rules if rule.result in {"fail", "partial", "skipped"}]
 
 
-def _appendix(score_breakdown: JsonDict) -> Appendix:
+# Rules that read Search Console facts. Without Search Console they can only ever be "skipped",
+# so the reader-facing rule lists leave them out (scores and point totals are unchanged).
+SEARCH_CONSOLE_RULE_PREFIX = "seo.gsc."
+
+
+def _without_search_console_rules(
+    sections: list[ReportSection], settings: Settings
+) -> list[ReportSection]:
+    if settings.search_console_enabled:
+        return sections
+    return [
+        section.model_copy(
+            update={
+                "opportunities": [
+                    rule
+                    for rule in section.opportunities
+                    if not rule.rule_id.startswith(SEARCH_CONSOLE_RULE_PREFIX)
+                ]
+            }
+        )
+        for section in sections
+    ]
+
+
+def _appendix(score_breakdown: JsonDict, *, search_console: bool = True) -> Appendix:
     categories = _dict(score_breakdown.get("categories"))
     return Appendix(
         scoring_note=(
@@ -1187,7 +1244,11 @@ def _appendix(score_breakdown: JsonDict) -> Appendix:
             "YAML rubrics. Commentary explains those facts; it does not create new scores."
         ),
         seo_rules=[
-            _rule_summary(rule) for rule in _list(_dict(categories.get("seo")).get("rules"))
+            summary
+            for summary in (
+                _rule_summary(rule) for rule in _list(_dict(categories.get("seo")).get("rules"))
+            )
+            if search_console or not summary.rule_id.startswith(SEARCH_CONSOLE_RULE_PREFIX)
         ],
         uxui_rules=[
             _rule_summary(rule) for rule in _list(_dict(categories.get("uxui")).get("rules"))

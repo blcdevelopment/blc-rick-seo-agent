@@ -32,13 +32,21 @@ export interface AuditCreateRequest {
   social_handles?: Record<string, string> | null;
 }
 
+// The teaser report profile's call-to-action (apps/worker/stages/report_profile.py).
+export interface ReportCta {
+  label: string;
+  url: string;
+  message: string;
+}
+
 export interface SocialReportFinding {
   id: string;
   label: string;
   metric?: string | null;
   remediation: string | null;
   impact: string;
-  tier: string;
+  // Null in a teaser report (report_profile "teaser"), which carries no fixes.
+  tier: string | null;
   result: string;
   narrative?: string;
 }
@@ -130,6 +138,9 @@ export interface SocialReport {
   top_posts?: SocialTopPost[];
   per_platform?: SocialPlatformScore[];
   roadmap: Record<string, SocialReportFinding[]>;
+  // Standalone social reports only; a combined report carries these on its ReportPayload.
+  report_profile?: "full" | "teaser";
+  cta?: ReportCta | null;
 }
 
 // Combined-audit Overall Lead-Gen Readiness (website composite blended with the Social Score).
@@ -392,6 +403,11 @@ export interface ReportPayload {
   combined_complete?: boolean;
   // On-demand AI Visibility (Semrush) enrichment; null unless the refresh action ran.
   ai_visibility?: AiVisibility | null;
+  // "teaser" payloads carry no fixes; the UI shows `cta` where the roadmap would be.
+  report_profile?: "full" | "teaser";
+  cta?: ReportCta | null;
+  // False when the edition runs without Google Search Console: hide its blocks.
+  show_search_console?: boolean;
 }
 
 export interface AiVisibilityMetric {

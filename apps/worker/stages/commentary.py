@@ -259,17 +259,21 @@ def _social_band(score: int | None) -> str:
     return "needs work"
 
 
-def _deterministic_social_commentary(*, score: int | None, findings: list[JsonDict]) -> JsonDict:
+def deterministic_social_summary(score: int | None, finding_count: int) -> str:
+    """The rule-derived social executive summary (no LLM): the baseline the polish rewrites, and
+    what the teaser report profile shows in place of any LLM prose."""
     if score is None:
-        summary = "Social data could not be fully collected, so a Social Score is not available."
-    else:
-        summary = f"This social presence scored {score}/100 ({_social_band(score)})."
-        if findings:
-            count = len(findings)
-            noun = "opportunity" if count == 1 else "opportunities"
-            summary += f" The audit flagged {count} {noun} to strengthen lead generation."
+        return "Social data could not be fully collected, so a Social Score is not available."
+    summary = f"This social presence scored {score}/100 ({_social_band(score)})."
+    if finding_count:
+        noun = "opportunity" if finding_count == 1 else "opportunities"
+        summary += f" The audit flagged {finding_count} {noun} to strengthen lead generation."
+    return summary
+
+
+def _deterministic_social_commentary(*, score: int | None, findings: list[JsonDict]) -> JsonDict:
     return {
-        "executive_summary": summary,
+        "executive_summary": deterministic_social_summary(score, len(findings)),
         "findings": [
             {
                 "id": finding.get("id") or "",

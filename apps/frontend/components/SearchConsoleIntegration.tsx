@@ -1,4 +1,4 @@
-import { useAuth } from "@clerk/nextjs";
+import { useApiToken } from "../lib/auth";
 import { useRouter } from "next/router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
@@ -26,7 +26,7 @@ function queryValue(value: string | string[] | undefined): string | null {
 }
 
 export default function SearchConsoleIntegration() {
-  const { getToken } = useAuth();
+  const { getToken } = useApiToken();
   const router = useRouter();
   const [status, setStatus] = useState<SearchConsolePropertiesResponse | null>(null);
   const [loading, setLoading] = useState(false);

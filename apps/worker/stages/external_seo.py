@@ -39,7 +39,9 @@ def collect_external_seo_facts(
         rendered_pages=rendered_pages,
         deadline=deadline,
     )
-    if deadline is not None and (deadline - time.monotonic()) < _GSC_MIN_SECONDS:
+    if not settings.search_console_enabled:
+        google = _skipped_google("disabled")
+    elif deadline is not None and (deadline - time.monotonic()) < _GSC_MIN_SECONDS:
         google = _skipped_google("insufficient_time_budget")
     else:
         google = collect_google_search_console_facts(

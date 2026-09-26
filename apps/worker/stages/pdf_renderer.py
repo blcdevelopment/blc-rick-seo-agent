@@ -32,7 +32,7 @@ class PdfRenderResult(BaseModel):
 
 
 def render_audit_pdf(job: Any, result: Any, settings: Settings) -> PdfRenderResult:
-    payload = compose_report_payload(job, result)
+    payload = compose_report_payload(job, result, settings=settings)
     output_path = _output_path(settings.local_report_storage_dir, str(job.id))
     return render_report_pdf(
         payload,
@@ -102,7 +102,7 @@ def render_social_pdf(job: Any, result: Any, settings: Settings) -> PdfRenderRes
     """Render the standalone Social audit report (separate template; PDF only)."""
     from apps.worker.stages.social.report import compose_social_report_payload
 
-    payload = compose_social_report_payload(job, result)
+    payload = compose_social_report_payload(job, result, settings=settings)
     output_path = _output_path(settings.local_report_storage_dir, str(job.id))
     _ensure_font_cache()
     from weasyprint import HTML

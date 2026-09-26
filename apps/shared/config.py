@@ -46,6 +46,14 @@ class Settings(BaseSettings):
     # so a stranger who self-registers on the Clerk instance still can't reach the audit endpoints.
     clerk_allowed_subjects: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
+    # Public audits (Rick edition): visitors run an audit and read its report WITHOUT signing in.
+    # Opens only the visitor endpoints (create, status, detail, PDF, DOCX); the unguessable job
+    # UUID in the report URL is the only key to a report, like a share link. Operator endpoints
+    # (history list, reruns, share links, metrics, Search Console connect) keep the Clerk check,
+    # and on a production public deployment without CLERK_ISSUER they answer 403 instead of
+    # falling open. The frontend's matching build flag is NEXT_PUBLIC_PUBLIC_AUDITS_ENABLED.
+    public_audits_enabled: bool = False
+
     database_url: str = "postgresql+psycopg://blc:change-me-local@localhost:5432/blc_website_audit"
 
     redis_url: str = "redis://localhost:6379/0"
@@ -69,6 +77,17 @@ class Settings(BaseSettings):
     storage_retention_days: int = Field(default=90, ge=0)
     # Read-only share links: how long a generated share token stays valid.
     share_link_ttl_days: int = Field(default=7, ge=1, le=365)
+
+    # Report profile. "full" is the complete report: findings AND their fixes ("Do this" action
+    # items, recommendations, the roadmap). "teaser" (Rick edition) shows the problems (findings,
+    # severity, evidence, scores), strips every fix, and shows a booking call-to-action in their
+    # place. Applied once, where the report payload is composed, so the PDF, DOCX, API/share JSON
+    # and UI always agree; the API and worker must therefore run with the same value.
+    report_profile: Literal["full", "teaser"] = "full"
+    # The teaser's call-to-action (unused by the full profile). Empty URL => the CTA renders its
+    # label and message without a link.
+    booking_url: str = ""
+    booking_cta_label: str = "Book a meeting with Rick"
 
     openai_api_key: SecretStr | None = None
     openai_model: str = "gpt-4o"
@@ -121,6 +140,13 @@ class Settings(BaseSettings):
     # Circuit breaker: after this many CONSECUTIVE internal network failures the sweep
     # stops and reports itself bot-blocked instead of emitting mass false "dead links".
     site_health_breaker_threshold: int = Field(default=5, ge=2, le=50)
+
+    # Google Search Console: the external-SEO stage's search analytics + URL inspection, the
+    # report's Search Performance blocks, and the /google/search-console connect routes. False
+    # (the Rick edition) never contacts Google, mounts no OAuth routes and hides every Search
+    # Console block on the PDF, DOCX and UI. Its scored rules skip and the score rescales, exactly
+    # as for an audit with no connected Google account.
+    search_console_enabled: bool = True
 
     google_oauth_client_id: str = ""
     google_oauth_client_secret: SecretStr | None = None
@@ -286,6 +312,15 @@ class Settings(BaseSettings):
     def parse_csv_list(cls, value: str | list[str]) -> list[str]:
         if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]
+        return value
+
+    @field_validator("booking_url")
+    @classmethod
+    def validate_booking_url(cls, value: str) -> str:
+        # Rendered as a link in the PDF, DOCX and UI, so only real link schemes are accepted.
+        value = value.strip()
+        if value and not value.startswith(("https://", "http://", "mailto:", "tel:")):
+            raise ValueError("booking_url must start with https://, http://, mailto: or tel:")
         return value
 
     @field_validator("crawler_chromium_executable_path", "screaming_frog_binary", mode="before")

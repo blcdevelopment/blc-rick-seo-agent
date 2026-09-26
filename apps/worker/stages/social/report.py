@@ -12,6 +12,8 @@ from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+from apps.shared.config import Settings, get_settings
+from apps.worker.stages.report_profile import apply_social_report_profile
 from apps.worker.stages.social.extractor import profile_link_from_handle, profile_url_name
 
 JsonDict = dict[str, Any]
@@ -24,10 +26,14 @@ def _dict(value: Any) -> JsonDict:
 
 
 def _fmt(value: Any) -> str:
-    """Compact number formatting: drop a trailing .0, keep one decimal otherwise."""
+    """Compact number formatting: drop a trailing .0, keep one decimal otherwise, but never let
+    that rounding print a small non-zero measurement as 0.0 (0.04% engagement read "0.0%")."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return str(value)
-    return str(int(value)) if float(value).is_integer() else f"{value:.1f}"
+    if float(value).is_integer():
+        return str(int(value))
+    text = f"{value:.1f}"
+    return f"{value:.2g}" if float(text) == 0 else text
 
 
 def _unit(fact_path: str) -> str:
@@ -328,11 +334,23 @@ def build_social_report_data(
     }
 
 
-def compose_social_report_payload(job: Any, result: Any) -> JsonDict:
+def compose_social_report_data(job: Any, result: Any) -> JsonDict:
+    """The complete social report (every finding with its remediation), whatever the report
+    profile. The worker's commentary step takes the fixes as its input; every surface uses
+    compose_social_report_payload, which applies the configured profile."""
     return build_social_report_data(
         social_facts=getattr(result, "social_facts", None),
         social_breakdown=getattr(result, "score_breakdown", None),
         social_score=getattr(result, "social_score", None),
         handles=getattr(job, "social_handles", None),
         commentary=getattr(result, "commentary", None),
+    )
+
+
+def compose_social_report_payload(
+    job: Any, result: Any, *, settings: Settings | None = None
+) -> JsonDict:
+    # Last step, shared by every surface: the teaser profile strips the fixes here.
+    return apply_social_report_profile(
+        compose_social_report_data(job, result), settings or get_settings()
     )

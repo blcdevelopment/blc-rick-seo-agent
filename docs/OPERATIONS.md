@@ -1,5 +1,9 @@
 # Production operations
 
+> **⚠️ Rick edition (`blc-rick-seo-agent`): this runbook is inherited unchanged and describes the
+> PARENT app's live stack.** This edition is not deployed. Do not run these commands for this
+> repo; its own deployment plan will replace this file once the host and domain are known.
+
 Day-2 runbook for the live stack at **https://ai.builderleadconverter.com**: how to change
 environment variables, connect Semrush, run the cron jobs and diagnose problems.
 

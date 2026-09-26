@@ -46,7 +46,7 @@ from apps.worker.stages.social.extractor import (
 )
 from apps.worker.stages.social.places_provider import collect_google_business_facts
 from apps.worker.stages.social.providers import get_provider
-from apps.worker.stages.social.report import compose_social_report_payload
+from apps.worker.stages.social.report import compose_social_report_data
 from apps.worker.stages.social.youtube_analytics_provider import (
     fetch_channel_analytics,
     fetch_own_channel,
@@ -403,7 +403,9 @@ def _run_social_pipeline(
     result = _upsert_social_result(db, job, social_facts, social_result)
 
     _mark_job(db, job, AuditStatus.COMMENTING, "Writing social commentary", 88)
-    baseline = compose_social_report_payload(job, result)
+    # The FULL data (remediation included) whatever the report profile: the commentary step
+    # needs the fixes as input, and stored data must not depend on how reports are rendered.
+    baseline = compose_social_report_data(job, result)
     commentary = generate_social_commentary(
         audit_context={"handles": job.social_handles, "niche": job.niche},
         social_facts=social_facts,

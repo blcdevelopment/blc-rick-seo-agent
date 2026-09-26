@@ -50,6 +50,13 @@ _SEVERITY_MATRIX: dict[tuple[str, str], Severity] = {
 
 _DEFAULT_ACTION = "Address this item to improve the score."
 
+# Closing advice of the executive summary. It tells the reader how to work through the fixes,
+# so the teaser report profile removes it (report_profile.strip_fix_advice).
+EXECUTIVE_SUMMARY_CLOSER = (
+    "Start with the issues that block visitors or search engines first, then move into the "
+    "content and conversion improvements."
+)
+
 
 def build_content_plan(
     *,
@@ -348,7 +355,7 @@ def _executive_summary(scores: JsonDict, top_label: str | None, opportunity: Jso
         summary += " SEO is stronger than the on-page conversion experience, so UX/UI is the main reason the combined score is lower."
     if top_label:
         summary += f" The highest-priority opportunity is: {top_label}."
-    summary += " Start with the issues that block visitors or search engines first, then move into the content and conversion improvements."
+    summary += " " + EXECUTIVE_SUMMARY_CLOSER
     return summary
 
 

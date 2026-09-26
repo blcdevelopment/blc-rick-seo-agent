@@ -1,5 +1,11 @@
 # Deployment Guide — BLC Website Audit
 
+> **⚠️ Rick edition (`blc-rick-seo-agent`): this guide is inherited unchanged and describes the
+> PARENT app's live production deployment** (`blc-social-audit` at `ai.builderleadconverter.com`).
+> This edition is not deployed, and its deploy workflow and `deploy/deploy.sh` are disabled.
+> Do not run these steps for this repo. Its own deployment plan will go in
+> [docs/OPERATIONS.md](docs/OPERATIONS.md).
+
 > **Update (2026-09-15):** production hardening — `/docs`, `/redoc` and `/openapi.json` are off
 > when `APP_ENV=production`; Apify/YouTube keys moved from URL query strings to request headers and
 > httpx request logging is held at WARNING (no credentials in `docker compose logs`); `.dockerignore`

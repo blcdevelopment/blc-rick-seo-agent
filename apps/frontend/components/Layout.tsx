@@ -3,6 +3,7 @@ import Head from "next/head";
 import Link from "next/link";
 import { useRouter } from "next/router";
 import type { ReactNode } from "react";
+import { PUBLIC_AUDITS } from "../lib/auth";
 
 interface LayoutProps {
   title: string;
@@ -13,7 +14,8 @@ const NAV_LINKS = [
   // Social audits are now run from the Website Audit page (add social links there to get a
   // combined report) — there is no separate Social Audit tab.
   { href: "/", label: "Website Audit" },
-  { href: "/audits", label: "Audit History" },
+  // The history lists every audit, so it is an operator page: hidden from public visitors.
+  ...(PUBLIC_AUDITS ? [] : [{ href: "/audits", label: "Audit History" }]),
 ];
 
 export default function Layout({ title, children }: LayoutProps) {
@@ -49,14 +51,20 @@ export default function Layout({ title, children }: LayoutProps) {
                 );
               })}
             </nav>
-            <div className="topbar-user">
-              <UserButton />
-            </div>
+            {!PUBLIC_AUDITS && (
+              <div className="topbar-user">
+                <UserButton />
+              </div>
+            )}
           </div>
         </header>
         <main className="content">{children}</main>
         <footer className="appfooter">
-          <span>BLC Website Audit · Phase 1 Internal Operator Console</span>
+          <span>
+            {PUBLIC_AUDITS
+              ? "Builder Lead Converter · Website Audit"
+              : "BLC Website Audit · Phase 1 Internal Operator Console"}
+          </span>
         </footer>
       </div>
     </>

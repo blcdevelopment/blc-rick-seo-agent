@@ -11,7 +11,7 @@ import pytest
 from apps.shared.config import Settings
 from apps.worker.stages.scoring import score_social_audit
 from apps.worker.stages.social.extractor import extract_social_facts
-from apps.worker.stages.social.report import _display_handle, build_social_report_data
+from apps.worker.stages.social.report import _display_handle, _metric_line, build_social_report_data
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 NOW = datetime(2026, 6, 23, tzinfo=UTC)
@@ -65,6 +65,14 @@ def test_metric_line_handles_percent_and_count_facts() -> None:
     # a count fact (link in bio) -> no spurious unit, still shows the target
     if "social.link_in_bio" in by_id:
         assert "target" in (by_id["social.link_in_bio"]["metric"] or "")
+
+
+def test_metric_line_never_rounds_a_small_measurement_to_zero() -> None:
+    # 0.04% engagement used to print "0.0% (target ≥ 2%)" beside a "0.04%" insights tile.
+    rule = {"unit": "%", "evidence": {"value": 0.04, "params": {"min": 2}}}
+    assert _metric_line(rule) == "0.04% (target ≥ 2%)"
+    rule["evidence"]["value"] = 1.26
+    assert _metric_line(rule) == "1.3% (target ≥ 2%)"
 
 
 def test_top_posts_ranked_by_combined_attention_proxy() -> None:

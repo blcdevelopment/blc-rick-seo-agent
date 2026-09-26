@@ -9,18 +9,26 @@
 #
 # You can also run it by hand on the box for a manual deploy / re-deploy:
 #
-#   cd ~/blc-social-audit && bash deploy/deploy.sh             # deploy origin/main HEAD
-#   cd ~/blc-social-audit && bash deploy/deploy.sh <commitsha> # deploy a specific commit
+#   cd ~/blc-rick-seo-agent && bash deploy/deploy.sh             # deploy origin/main HEAD
+#   cd ~/blc-rick-seo-agent && bash deploy/deploy.sh <commitsha> # deploy a specific commit
 #
-# Prerequisites on the box (already satisfied per DEPLOYMENT.md §2–5):
-#   * repo cloned at $HOME/blc-social-audit (override with BLC_REPO_DIR)
+# Prerequisites on the box (for the Rick edition: NOT set up yet):
+#   * repo cloned at $HOME/blc-rick-seo-agent (override with BLC_REPO_DIR)
 #   * the read-only git deploy key works (`git fetch origin` succeeds)
 #   * the invoking user is in the `docker` group (no sudo needed)
 #   * a production .env exists in the repo dir (gitignored; survives git reset)
 #
 set -euo pipefail
 
-REPO_DIR="${BLC_REPO_DIR:-$HOME/blc-social-audit}"
+# DISABLED: this is the Rick edition (blc-rick-seo-agent), which is not
+# provisioned yet. The script was inherited from blc-social-audit, whose copy
+# rolls the LIVE production stack; this guard makes a hand-run on the shared box
+# a no-op. Remove it deliberately, in a reviewed PR, once this edition has its
+# own host, domain and compose project (see docs/OPERATIONS.md).
+echo "ERROR: deploys are disabled for blc-rick-seo-agent until it is provisioned." >&2
+exit 1
+
+REPO_DIR="${BLC_REPO_DIR:-$HOME/blc-rick-seo-agent}"
 COMPOSE_FILE="docker-compose.prod.yml"
 EDGE_NETWORK="${BLC_EDGE_NETWORK:-blc-edge}"
 TARGET_REF="${1:-}"

@@ -46,7 +46,11 @@ def create_app(settings: Settings) -> FastAPI:
     app.include_router(health.router)
     app.include_router(metrics.router)
     app.include_router(audits.router)
-    app.include_router(google.router)
+    # Create / poll / read an audit: open to anyone with PUBLIC_AUDITS_ENABLED (require_visitor).
+    app.include_router(audits.visitor_router)
+    # Search Console connect/OAuth routes exist only when the feature is on.
+    if settings.search_console_enabled:
+        app.include_router(google.router)
     # Public, token-gated report sharing — intentionally NOT behind Clerk auth.
     app.include_router(shared.router)
 

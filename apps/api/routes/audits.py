@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from apps.api.auth import require_user
+from apps.api.auth import require_user, require_visitor
 from apps.api.deps import get_db_session
 from apps.api.schemas.audits import (
     AuditCreateRequest,
@@ -30,8 +30,14 @@ from apps.worker.stages.report_payload import compose_report_payload
 from apps.worker.stages.social.extractor import profile_link_from_handle
 from apps.worker.stages.social.report import compose_social_report_payload
 
-# Every audit endpoint requires a valid Clerk session (no-op when CLERK_ISSUER is unset).
+# Operator endpoints (history, reruns, share links) require a valid Clerk session (no-op when
+# CLERK_ISSUER is unset, except on a production public deployment; see auth.require_user).
 router = APIRouter(prefix="/audits", tags=["audits"], dependencies=[Depends(require_user)])
+# Visitor endpoints (create an audit, poll it, read its report) keep the same Clerk check unless
+# PUBLIC_AUDITS_ENABLED opens them to anyone (auth.require_visitor).
+visitor_router = APIRouter(
+    prefix="/audits", tags=["audits"], dependencies=[Depends(require_visitor)]
+)
 DbSession = Annotated[Session, Depends(get_db_session)]
 AuditLimit = Annotated[int, Query(ge=1, le=100)]
 AuditOffset = Annotated[int, Query(ge=0)]
@@ -162,14 +168,16 @@ def _list_item(job: AuditJob) -> AuditListItem:
     )
 
 
-@router.post("", response_model=AuditCreateResponse, status_code=status.HTTP_201_CREATED)
+@visitor_router.post("", response_model=AuditCreateResponse, status_code=status.HTTP_201_CREATED)
 def create_audit(
     payload: AuditCreateRequest,
     db: DbSession,
 ) -> AuditCreateResponse:
     settings = get_settings()
     brand_overrides = None
-    if payload.brand_overrides is not None:
+    # White-label branding is an operator feature: an anonymous visitor must not be able to put
+    # another brand (or a remote logo) on a report this server renders.
+    if payload.brand_overrides is not None and not settings.public_audits_enabled:
         brand_overrides = payload.brand_overrides.model_dump(exclude_none=True) or None
 
     if payload.audit_type == "social":
@@ -258,7 +266,7 @@ def list_audits(
     return AuditListResponse(audits=[_list_item(job) for job in jobs])
 
 
-@router.get("/{job_id}/status", response_model=AuditStatusResponse)
+@visitor_router.get("/{job_id}/status", response_model=AuditStatusResponse)
 def get_audit_status(job_id: UUID, db: DbSession) -> AuditStatusResponse:
     job = db.get(AuditJob, job_id)
     if job is None:
@@ -266,7 +274,7 @@ def get_audit_status(job_id: UUID, db: DbSession) -> AuditStatusResponse:
     return _status_response(job)
 
 
-@router.get("/{job_id}", response_model=AuditDetailResponse)
+@visitor_router.get("/{job_id}", response_model=AuditDetailResponse)
 def get_audit_detail(job_id: UUID, db: DbSession) -> AuditDetailResponse:
     job = db.get(AuditJob, job_id)
     if job is None:
@@ -395,7 +403,7 @@ def rerun_audit_ai_visibility(job_id: UUID, db: DbSession) -> AuditEnrichmentRes
     )
 
 
-@router.get("/{job_id}/report")
+@visitor_router.get("/{job_id}/report")
 def get_audit_report(job_id: UUID, db: DbSession) -> FileResponse:
     job = db.get(AuditJob, job_id)
     if job is None:
@@ -421,7 +429,7 @@ def get_audit_report(job_id: UUID, db: DbSession) -> FileResponse:
     )
 
 
-@router.get("/{job_id}/docx")
+@visitor_router.get("/{job_id}/docx")
 def get_audit_docx(job_id: UUID, db: DbSession) -> FileResponse:
     job = db.get(AuditJob, job_id)
     if job is None:

@@ -1,4 +1,4 @@
-import { useAuth } from "@clerk/nextjs";
+import { PUBLIC_AUDITS, useApiToken } from "../../lib/auth";
 import Link from "next/link";
 import { useRouter } from "next/router";
 import { useEffect, useState } from "react";
@@ -10,6 +10,7 @@ import {
   AuditDetail,
   AuditShareResponse,
   OverallReadiness,
+  ReportCta,
   ReportFormat,
   ReportPayload,
   ReportSection,
@@ -155,6 +156,25 @@ function SectionBlock({ section }: { section: ReportSection }) {
   );
 }
 
+/** The teaser profile's call-to-action, shown where the full report lists its fixes. */
+function CtaBlock({ cta }: { cta: ReportCta }) {
+  return (
+    <section className="card cta-block">
+      <h3>Get the fixes</h3>
+      <p>{cta.message}</p>
+      {cta.url ? (
+        <a className="btn btn-primary" href={cta.url} target="_blank" rel="noopener noreferrer">
+          {cta.label}
+        </a>
+      ) : (
+        <p>
+          <strong>{cta.label}</strong>
+        </p>
+      )}
+    </section>
+  );
+}
+
 function RoadmapBlock({ roadmap }: { roadmap: RoadmapTier[] }) {
   return (
     <section className="card roadmap-block">
@@ -276,6 +296,8 @@ function ExternalSeoBlock({
   const summary = report.external_seo_summary;
   const technicalAvailable = technical.status === "complete";
   const searchAvailable = search.status === "complete";
+  // Editions without Search Console hide every Search Console block (computed server-side).
+  const showSearch = report.show_search_console !== false;
 
   return (
     <section className="card external-seo-block">
@@ -283,32 +305,36 @@ function ExternalSeoBlock({
         <div>
           <h3>External SEO intelligence</h3>
           <p className="section-headline">
-            Site-wide technical crawl facts and Google Search Console opportunities.
+            {showSearch
+              ? "Site-wide technical crawl facts and Google Search Console opportunities."
+              : "Site-wide technical crawl facts."}
           </p>
         </div>
-        <span className="pill">{summary.status}</span>
+        <span className="pill">{showSearch ? summary.status : technical.status_label}</span>
       </div>
 
-      <div className="external-status-grid">
-        <div>
-          <span>{summary.technical_crawl_tool || "Technical crawl"}</span>
-          <strong>{summary.technical_crawl_status}</strong>
+      {showSearch && (
+        <div className="external-status-grid">
+          <div>
+            <span>{summary.technical_crawl_tool || "Technical crawl"}</span>
+            <strong>{summary.technical_crawl_status}</strong>
+          </div>
+          <div>
+            <span>Search Console</span>
+            <strong>{summary.gsc_status}</strong>
+          </div>
+          <div>
+            <span>URL inspection</span>
+            <strong>{summary.url_inspection_status}</strong>
+          </div>
+          <div>
+            <span>Opportunities</span>
+            <strong>{searchAvailable ? summary.search_opportunity_count : "N/A"}</strong>
+          </div>
         </div>
-        <div>
-          <span>Search Console</span>
-          <strong>{summary.gsc_status}</strong>
-        </div>
-        <div>
-          <span>URL inspection</span>
-          <strong>{summary.url_inspection_status}</strong>
-        </div>
-        <div>
-          <span>Opportunities</span>
-          <strong>{searchAvailable ? summary.search_opportunity_count : "N/A"}</strong>
-        </div>
-      </div>
+      )}
 
-      <div className="enrichment-grid">
+      <div className={showSearch ? "enrichment-grid" : "enrichment-grid enrichment-grid-single"}>
         <div>
           <h4>Technical SEO</h4>
           <p className="muted">
@@ -349,9 +375,11 @@ function ExternalSeoBlock({
                         <p>
                           <b>Why it matters:</b> {issue.why_it_matters}
                         </p>
-                        <p>
-                          <b>Recommended fix:</b> {issue.recommended_fix}
-                        </p>
+                        {issue.recommended_fix && (
+                          <p>
+                            <b>Recommended fix:</b> {issue.recommended_fix}
+                          </p>
+                        )}
                       </div>
                       {issue.examples.length > 0 && (
                         <div className="issue-locations">
@@ -382,46 +410,48 @@ function ExternalSeoBlock({
           )}
         </div>
 
-        <div>
-          <h4>Search performance</h4>
-          <p className="muted">
-            {searchAvailable
-              ? `${search.site_url || "Matched Search Console property"} · ${recordNumberText(
-                  search.summary,
-                  "top_query_count",
-                )} queries · ${recordNumberText(search.summary, "top_page_count")} pages`
-              : `Status: ${search.status_label}${
-                  search.reason_label ? ` — ${search.reason_label}` : ""
-                }`}
-          </p>
-          {searchAvailable && search.ranking_opportunities.length > 0 ? (
-            <table className="insight-table">
-              <thead>
-                <tr>
-                  <th>Query</th>
-                  <th>Position</th>
-                  <th>CTR</th>
-                </tr>
-              </thead>
-              <tbody>
-                {search.ranking_opportunities.slice(0, 6).map((row, index) => (
-                  <tr key={`${recordText(row, "query")}-${index}`}>
-                    <td>{recordText(row, "query")}</td>
-                    <td>{recordText(row, "position")}</td>
-                    <td>{ctrText(row)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : searchAvailable ? (
+        {showSearch && (
+          <div>
+            <h4>Search performance</h4>
             <p className="muted">
-              Search Console completed and did not return ranking opportunities that matched
-              the report thresholds.
+              {searchAvailable
+                ? `${search.site_url || "Matched Search Console property"} · ${recordNumberText(
+                    search.summary,
+                    "top_query_count",
+                  )} queries · ${recordNumberText(search.summary, "top_page_count")} pages`
+                : `Status: ${search.status_label}${
+                    search.reason_label ? ` — ${search.reason_label}` : ""
+                  }`}
             </p>
-          ) : (
-            <p className="muted">Search Console data is not available for this audit.</p>
-          )}
-        </div>
+            {searchAvailable && search.ranking_opportunities.length > 0 ? (
+              <table className="insight-table">
+                <thead>
+                  <tr>
+                    <th>Query</th>
+                    <th>Position</th>
+                    <th>CTR</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {search.ranking_opportunities.slice(0, 6).map((row, index) => (
+                    <tr key={`${recordText(row, "query")}-${index}`}>
+                      <td>{recordText(row, "query")}</td>
+                      <td>{recordText(row, "position")}</td>
+                      <td>{ctrText(row)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : searchAvailable ? (
+              <p className="muted">
+                Search Console completed and did not return ranking opportunities that matched
+                the report thresholds.
+              </p>
+            ) : (
+              <p className="muted">Search Console data is not available for this audit.</p>
+            )}
+          </div>
+        )}
       </div>
     </section>
   );
@@ -595,7 +625,7 @@ function AiVisibilityData({ aiv }: { aiv: AiVisibility }) {
   );
 }
 
-function SocialReportView({ report }: { report: SocialReport }) {
+function SocialReportView({ report, teaser = false }: { report: SocialReport; teaser?: boolean }) {
   // The server nulls content_insights when every field is missing, so plain truthiness is the
   // whole "anything to show" check. Same for google_business (combined audits only) — the
   // listing the Google-reviews and phone (NAP) checks were scored against.
@@ -642,7 +672,7 @@ function SocialReportView({ report }: { report: SocialReport }) {
       ) : report.findings.length > 0 ? (
         <section className="card section-block">
           <div className="section-head">
-            <h3>What to improve</h3>
+            <h3>{teaser ? "What we found" : "What to improve"}</h3>
           </div>
           <ul className="finding-list">
             {report.findings.map((finding) => (
@@ -905,7 +935,7 @@ function SocialReportView({ report }: { report: SocialReport }) {
 
 export default function AuditDetailPage() {
   const router = useRouter();
-  const { getToken } = useAuth();
+  const { getToken } = useApiToken();
   const { id } = router.query;
   const [detail, setDetail] = useState<AuditDetail | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -1074,8 +1104,9 @@ export default function AuditDetailPage() {
   return (
     <Layout title="Audit Detail | BLC Website Audit">
       <div className="page-wide">
-        <Link href="/audits" className="back-link">
-          ← Back to audit history
+        {/* The history page is operator-only; a public visitor goes back to run another audit. */}
+        <Link href={PUBLIC_AUDITS ? "/" : "/audits"} className="back-link">
+          {PUBLIC_AUDITS ? "← Audit another site" : "← Back to audit history"}
         </Link>
 
         {!detail && !loadError && (
@@ -1148,22 +1179,27 @@ export default function AuditDetailPage() {
                   </div>
                   {detail.report_available ? (
                     <div className="download-buttons">
-                      <button
-                        type="button"
-                        className="btn btn-secondary"
-                        onClick={handleRerunEnrichment}
-                        disabled={enriching || detail.status !== "complete"}
-                      >
-                        {enriching ? "Starting enrichment..." : "Rerun enrichment"}
-                      </button>
-                      <button
-                        type="button"
-                        className="btn btn-secondary"
-                        onClick={handleRefreshAiVisibility}
-                        disabled={refreshingAiv || detail.status !== "complete"}
-                      >
-                        {refreshingAiv ? "Refreshing AI visibility..." : "Refresh AI Visibility"}
-                      </button>
+                      {/* Reruns and share links are operator actions (Clerk-gated API). */}
+                      {!PUBLIC_AUDITS && (
+                        <>
+                          <button
+                            type="button"
+                            className="btn btn-secondary"
+                            onClick={handleRerunEnrichment}
+                            disabled={enriching || detail.status !== "complete"}
+                          >
+                            {enriching ? "Starting enrichment..." : "Rerun enrichment"}
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-secondary"
+                            onClick={handleRefreshAiVisibility}
+                            disabled={refreshingAiv || detail.status !== "complete"}
+                          >
+                            {refreshingAiv ? "Refreshing AI visibility..." : "Refresh AI Visibility"}
+                          </button>
+                        </>
+                      )}
                       <button
                         type="button"
                         className="btn btn-primary"
@@ -1180,14 +1216,16 @@ export default function AuditDetailPage() {
                       >
                         {downloading === "docx" ? "Downloading DOCX..." : "Download DOCX"}
                       </button>
-                      <button
-                        type="button"
-                        className="btn btn-secondary"
-                        onClick={handleShare}
-                        disabled={sharing}
-                      >
-                        {sharing ? "Working..." : share ? "Refresh link" : "Share"}
-                      </button>
+                      {!PUBLIC_AUDITS && (
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          onClick={handleShare}
+                          disabled={sharing}
+                        >
+                          {sharing ? "Working..." : share ? "Refresh link" : "Share"}
+                        </button>
+                      )}
                     </div>
                   ) : (
                     <span className="muted">Report exports unavailable.</span>
@@ -1256,6 +1294,8 @@ export default function AuditDetailPage() {
                   </section>
                 )}
 
+                {detail.report.cta && <CtaBlock cta={detail.report.cta} />}
+
                 <WebsiteScopeBlock report={detail.report} />
 
                 <ExternalSeoBlock report={detail.report} />
@@ -1266,7 +1306,11 @@ export default function AuditDetailPage() {
 
                 <AccessibilityBlock report={detail.report} />
 
-                <RoadmapBlock roadmap={detail.report.roadmap} />
+                {detail.report.cta ? (
+                  <CtaBlock cta={detail.report.cta} />
+                ) : (
+                  <RoadmapBlock roadmap={detail.report.roadmap} />
+                )}
 
                 <section className="card meta-grid">
                   <div>
@@ -1280,21 +1324,26 @@ export default function AuditDetailPage() {
                         : `Status: ${detail.report.pagespeed_summary.status}`}
                     </p>
                   </div>
-                  <div>
-                    <h4>Commentary validation</h4>
-                    <p className="muted">
-                      {detail.report.validation_summary.status} ·{" "}
-                      {detail.report.validation_summary.numeric_claims_checked} claims checked
-                    </p>
-                  </div>
-                  <div>
-                    <h4>Rubric</h4>
-                    <p className="muted">{detail.report.metadata.rubric_version}</p>
-                  </div>
-                  <div>
-                    <h4>Commentary model</h4>
-                    <p className="muted">{detail.report.metadata.llm_model}</p>
-                  </div>
+                  {/* Internal QA details are operator information, not for public visitors. */}
+                  {!PUBLIC_AUDITS && (
+                    <>
+                      <div>
+                        <h4>Commentary validation</h4>
+                        <p className="muted">
+                          {detail.report.validation_summary.status} ·{" "}
+                          {detail.report.validation_summary.numeric_claims_checked} claims checked
+                        </p>
+                      </div>
+                      <div>
+                        <h4>Rubric</h4>
+                        <p className="muted">{detail.report.metadata.rubric_version}</p>
+                      </div>
+                      <div>
+                        <h4>Commentary model</h4>
+                        <p className="muted">{detail.report.metadata.llm_model}</p>
+                      </div>
+                    </>
+                  )}
                 </section>
 
                 {/* Combined audit: the social media report + overall readiness score are appended
@@ -1307,7 +1356,10 @@ export default function AuditDetailPage() {
                         <h3>Social Media Audit</h3>
                       </div>
                     </section>
-                    <SocialReportView report={detail.report.social_audit} />
+                    <SocialReportView
+                      report={detail.report.social_audit}
+                      teaser={detail.report.report_profile === "teaser"}
+                    />
                   </>
                 )}
 
@@ -1344,14 +1396,16 @@ export default function AuditDetailPage() {
                         >
                           {downloading === "pdf" ? "Downloading PDF..." : "Download PDF"}
                         </button>
-                        <button
-                          type="button"
-                          className="btn btn-secondary"
-                          onClick={handleShare}
-                          disabled={sharing}
-                        >
-                          {sharing ? "Working..." : share ? "Refresh link" : "Share"}
-                        </button>
+                        {!PUBLIC_AUDITS && (
+                          <button
+                            type="button"
+                            className="btn btn-secondary"
+                            onClick={handleShare}
+                            disabled={sharing}
+                          >
+                            {sharing ? "Working..." : share ? "Refresh link" : "Share"}
+                          </button>
+                        )}
                       </div>
                     ) : (
                       <span className="muted">Report export unavailable.</span>
@@ -1397,7 +1451,11 @@ export default function AuditDetailPage() {
                     </div>
                   )}
 
-                  <SocialReportView report={detail.social_report} />
+                  <SocialReportView
+                    report={detail.social_report}
+                    teaser={detail.social_report.report_profile === "teaser"}
+                  />
+                  {detail.social_report.cta && <CtaBlock cta={detail.social_report.cta} />}
                 </>
               )}
           </>
