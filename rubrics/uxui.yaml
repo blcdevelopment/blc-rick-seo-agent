@@ -1,0 +1,190 @@
+# v3 (2026): the email-visible rule became a low-pressure contact-path rule (a visible
+# email OR a contact page link OR a lead form) — many sites hide raw emails deliberately
+# as an anti-spam choice and must not be penalized for it. Form detection also credits
+# embedded/popup/lazy-iframe forms (provider signatures + the crawler's frame pass), and
+# the homepage field-count rule skips when an embed's fields cannot be counted.
+version: "phase2-uxui-v3"
+category: uxui
+max_score: 100
+normalization: rescale_to_max
+# Each rule carries content-plan metadata used to author findings/recommendations
+# deterministically (see docs/RUBRICS.md §8):
+#   impact              - importance when the rule fails (high|medium|low)
+#   tier                - remediation horizon (quick_win|mid_term|long_term)
+#   finding_label       - user-facing problem statement (no internal rule IDs)
+#   remediation         - imperative action sentence
+#   surface_as_finding  - false for non-actionable meta/health rules
+rules:
+  - id: uxui.collection.complete
+    description: UX/UI facts were extracted successfully.
+    weight: 4
+    fact_path: uxui.status
+    evaluator: exact_match
+    params:
+      full_credit: complete
+    impact: high
+    tier: quick_win
+    surface_as_finding: false
+
+  - id: uxui.primary_cta.present
+    description: At least one crawled page has a primary call to action.
+    weight: 10
+    fact_path: uxui.summary.pages_with_primary_cta
+    evaluator: threshold
+    params:
+      min: 1
+    impact: high
+    tier: quick_win
+    finding_label: No clear primary call to action was found
+    remediation: Add a prominent primary call to action (for example "Get a Quote") near the top of the page.
+
+  - id: uxui.cta.volume
+    description: The site offers multiple clear conversion paths.
+    weight: 8
+    fact_path: uxui.summary.total_ctas
+    evaluator: threshold
+    params:
+      min: 3
+      partial_min: 1
+    impact: medium
+    tier: quick_win
+    finding_label: The site offers few conversion paths
+    remediation: Add multiple clear calls to action across key pages.
+
+  - id: uxui.cta.above_fold
+    description: At least one CTA appears early in the page experience.
+    weight: 8
+    fact_path: uxui.summary.above_fold_ctas
+    evaluator: threshold
+    params:
+      min: 1
+    impact: medium
+    tier: quick_win
+    finding_label: No call to action appears above the fold
+    remediation: Place at least one call to action early in the page, before the visitor scrolls.
+
+  - id: uxui.forms.present
+    description: The site includes a lead capture form (on the page or as an embedded/popup form).
+    weight: 8
+    fact_path: uxui.summary.pages_with_form_capture
+    evaluator: threshold
+    params:
+      min: 1
+    # v2 facts stored before this key existed must rescale on re-run, not fail with a
+    # fabricated "no form found" finding; the v3 extractor always emits the key.
+    skip_if_missing: true
+    impact: high
+    tier: mid_term
+    finding_label: No lead capture form was found
+    remediation: Add a short lead capture form so visitors can request contact.
+
+  - id: uxui.homepage_form.field_count
+    description: Homepage form length is practical for lead capture.
+    weight: 6
+    fact_path: uxui.pages[0].forms.total_field_count
+    evaluator: range
+    params:
+      full_credit: [1, 5]
+      partial_credit:
+        - [6, 8]
+    # This rule judges form SIZE, not presence (that is uxui.forms.present). The extractor
+    # only asserts a size it actually measured (>=1 real static input, or the crawler's
+    # frame-pass count); a count of 0 always means the form was unmeasurable (a click-driven
+    # JS/popup form, a lazy embed, or none) and becomes None, so this rule SKIPS and rescales
+    # instead of printing a false "0 homepage form fields" on sites that capture via popups.
+    skip_if_missing: true
+    impact: low
+    tier: mid_term
+    finding_label: Homepage form is not sized for practical lead capture
+    remediation: Aim for a short homepage form of about 1-5 essential fields.
+
+  - id: uxui.phone.visible
+    description: A phone number is available on crawled pages.
+    weight: 8
+    fact_path: uxui.summary.pages_with_phone
+    evaluator: threshold
+    params:
+      min: 1
+    impact: high
+    tier: quick_win
+    finding_label: No phone number is visible on the crawled pages
+    remediation: Display a clickable phone number prominently in the header or hero.
+
+  - id: uxui.contact_path.low_pressure
+    description: A low-pressure contact path (visible email, contact page link, or lead form) is available on crawled pages.
+    weight: 6
+    fact_path: uxui.summary.pages_with_contact_path
+    evaluator: threshold
+    params:
+      min: 1
+    # Same re-run guard as uxui.forms.present: pre-v3 stored facts lack this key.
+    skip_if_missing: true
+    impact: medium
+    tier: quick_win
+    finding_label: No low-pressure contact path is visible on the crawled pages
+    remediation: Give visitors an easy first step - a visible contact email, a clear contact page link, or a short lead form.
+
+  - id: uxui.trust.present
+    description: Trust signals are visible on at least one crawled page.
+    weight: 9
+    fact_path: uxui.summary.pages_with_trust_signals
+    evaluator: threshold
+    params:
+      min: 1
+    impact: high
+    tier: mid_term
+    finding_label: No trust signals are visible
+    remediation: Add trust signals such as reviews, testimonials, badges, or guarantees.
+
+  - id: uxui.trust.depth
+    description: Trust evidence appears in more than one form.
+    weight: 5
+    fact_path: uxui.summary.total_trust_signals
+    evaluator: threshold
+    params:
+      min: 2
+      partial_min: 1
+    impact: low
+    tier: mid_term
+    finding_label: Trust evidence is limited
+    remediation: Add more than one type of trust signal across the site.
+
+  - id: uxui.navigation.present
+    description: Primary navigation is present.
+    weight: 8
+    fact_path: uxui.pages[0].navigation.has_nav
+    evaluator: boolean
+    impact: medium
+    tier: mid_term
+    finding_label: Primary navigation is missing
+    remediation: Add clear primary navigation so visitors can find key pages.
+
+  - id: uxui.copy.substantial
+    description: Page copy is substantial enough to explain the offer.
+    weight: 6
+    fact_path: uxui.pages[0].content.has_substantial_copy
+    evaluator: boolean
+    impact: low
+    tier: long_term
+    finding_label: Page copy is too thin to explain the offer
+    remediation: Expand page copy to clearly explain services, value, and next steps.
+
+  - id: uxui.direct_contact.present
+    description: Visitors can contact the business directly.
+    weight: 7
+    fact_path: uxui.pages[0].lead_capture.has_direct_contact
+    evaluator: boolean
+    impact: high
+    tier: quick_win
+    finding_label: Visitors have no direct way to contact the business
+    remediation: Add a direct contact method (phone, email, or contact form) to the homepage.
+
+  - id: uxui.lead_capture.cta
+    description: The homepage has at least one CTA.
+    weight: 7
+    fact_path: uxui.pages[0].lead_capture.has_cta
+    evaluator: boolean
+    impact: medium
+    tier: quick_win
+    finding_label: The homepage has no call to action
+    remediation: Add at least one clear call to action to the homepage.

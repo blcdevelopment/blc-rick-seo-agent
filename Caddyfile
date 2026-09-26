@@ -1,0 +1,36 @@
+# Reverse proxy + automatic HTTPS for the BLC Website Audit app.
+# Caddy obtains and renews a Let's Encrypt cert for the domain automatically
+# (ports 80 + 443 must be reachable — they are open in the Linode firewall).
+
+ai.builderleadconverter.com {
+	encode zstd gzip
+
+	# API: strip the /api prefix, then forward to FastAPI.
+	# e.g. https://.../api/audits  ->  http://api:8000/audits
+	handle_path /api/* {
+		reverse_proxy api:8000
+	}
+
+	# Everything else -> the Next.js operator UI.
+	handle {
+		reverse_proxy frontend:3000
+	}
+}
+
+# Additional BLC applications on the same VM. Their containers publish no
+# host ports; Caddy reaches their unique aliases over the shared blc-edge
+# Docker network.
+events.builderleadconverter.com {
+	encode zstd gzip
+	reverse_proxy blc-ep-app:8000
+}
+
+reactivation.builderleadconverter.com {
+	encode zstd gzip
+	reverse_proxy blc-dr-app:8000
+}
+
+board.builderleadconverter.com {
+	encode zstd gzip
+	reverse_proxy blc-board-app:8030
+}

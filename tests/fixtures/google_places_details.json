@@ -1,0 +1,12 @@
+{
+  "displayName": {"text": "Acme Studio", "languageCode": "en"},
+  "formattedAddress": "123 Main St, Austin, TX 78701, USA",
+  "nationalPhoneNumber": "(555) 100-2000",
+  "internationalPhoneNumber": "+1 555-100-2000",
+  "types": ["general_contractor", "point_of_interest", "establishment"],
+  "primaryTypeDisplayName": {"text": "General Contractor", "languageCode": "en"},
+  "rating": 4.7,
+  "userRatingCount": 128,
+  "websiteUri": "https://acmestudio.example",
+  "businessStatus": "OPERATIONAL"
+}

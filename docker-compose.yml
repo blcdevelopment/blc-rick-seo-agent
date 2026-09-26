@@ -1,0 +1,97 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-blc_website_audit}
+      POSTGRES_USER: ${POSTGRES_USER:-blc}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-local}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-blc} -d ${POSTGRES_DB:-blc_website_audit}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      APP_ENV: ${APP_ENV:-local}
+      APP_NAME: ${APP_NAME:-blc-website-audit}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-blc}:${POSTGRES_PASSWORD:-change-me-local}@postgres:5432/${POSTGRES_DB:-blc_website_audit}
+      REDIS_URL: redis://redis:6379/${REDIS_DB:-0}
+      CELERY_BROKER_URL: redis://redis:6379/${REDIS_DB:-0}
+      CELERY_RESULT_BACKEND: redis://redis:6379/${REDIS_DB:-0}
+      AUDIT_ENQUEUE_ENABLED: ${AUDIT_ENQUEUE_ENABLED:-true}
+      LOCAL_REPORT_STORAGE_DIR: /app/storage/reports
+      LOCAL_SCREENSHOT_STORAGE_DIR: /app/storage/screenshots
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - .:/app
+      - ./storage:/app/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn apps.api.main:app --host 0.0.0.0 --port 8000 --reload"
+
+  worker:
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      APP_ENV: ${APP_ENV:-local}
+      APP_NAME: ${APP_NAME:-blc-website-audit}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-blc}:${POSTGRES_PASSWORD:-change-me-local}@postgres:5432/${POSTGRES_DB:-blc_website_audit}
+      REDIS_URL: redis://redis:6379/${REDIS_DB:-0}
+      CELERY_BROKER_URL: redis://redis:6379/${REDIS_DB:-0}
+      CELERY_RESULT_BACKEND: redis://redis:6379/${REDIS_DB:-0}
+      AUDIT_ENQUEUE_ENABLED: ${AUDIT_ENQUEUE_ENABLED:-true}
+      LOCAL_REPORT_STORAGE_DIR: /app/storage/reports
+      LOCAL_SCREENSHOT_STORAGE_DIR: /app/storage/screenshots
+      # Pin Playwright's browser directory so it never derives the path from XDG_CACHE_HOME.
+      # The PDF renderer repoints XDG_CACHE_HOME at a font cache at runtime, which otherwise
+      # hides the installed browsers from the crawler on the 2nd+ audit in a worker process.
+      PLAYWRIGHT_BROWSERS_PATH: /root/.cache/ms-playwright
+    volumes:
+      - .:/app
+      - ./storage:/app/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # One-time Semrush connect (make semrush-connect) streams a browser over VNC on this port,
+    # bound to the host's localhost only and reached via an SSH tunnel — nothing listens otherwise.
+    ports:
+      - "127.0.0.1:5900:5900"
+    command: celery -A apps.worker.celery_app.celery_app worker --loglevel=info
+
+volumes:
+  postgres_data:

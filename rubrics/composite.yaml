@@ -1,0 +1,5 @@
+version: "phase1-composite-v1"
+max_score: 100
+weights:
+  seo: 0.45
+  uxui: 0.55

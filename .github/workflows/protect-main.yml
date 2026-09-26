@@ -1,0 +1,38 @@
+name: Protect main
+
+# Backstop guard: a GitHub Actions workflow runs *after* a push, so it cannot
+# physically block a direct commit to main — it fails loudly instead. The real
+# enforcement is a branch protection rule ("Require a pull request before
+# merging") in the repository settings. This workflow is the visible safety net.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  block-direct-push:
+    name: Block direct pushes to main
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Fail on a direct (non-merge) commit
+        run: |
+          # A shallow checkout (fetch-depth: 1) grafts HEAD as a root commit, so
+          # graph-traversal commands like `git rev-list --parents` hide the real
+          # parents and a legitimate PR merge looks parent-less. Read the raw
+          # commit object instead — it always lists every `parent` line:
+          #   normal commit   -> 1 parent line
+          #   PR merge commit -> 2+ parent lines  -> allowed
+          parent_count=$(git cat-file -p HEAD | grep -c '^parent ')
+          if [ "$parent_count" -lt 2 ]; then
+            echo "::error::Direct commit pushed to main. Open a pull request instead of committing to main directly."
+            exit 1
+          fi
+          echo "Merge commit detected on main — OK."

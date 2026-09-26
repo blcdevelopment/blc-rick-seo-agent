@@ -1,0 +1,18 @@
+{
+  "pageName": "Acme Studio",
+  "title": "Acme Studio — Independent Design Studio",
+  "facebookUrl": "https://www.facebook.com/acmestudio",
+  "pageUrl": "https://www.facebook.com/acmestudio",
+  "followers": 4200,
+  "likes": 4100,
+  "category": "Local Business",
+  "categories": ["Page", "Local Business"],
+  "intro": "Independent design studio. Message us to book a consult.",
+  "website": "https://acmestudio.example",
+  "email": "hello@acmestudio.example",
+  "phone": "+1 (555) 100-2000",
+  "address": "123 Main St, Austin, TX 78701",
+  "messenger": "https://m.me/acmestudio",
+  "profilePhoto": "https://example.com/acme-fb.jpg",
+  "profilePictureUrl": "https://example.com/acme-fb.png"
+}

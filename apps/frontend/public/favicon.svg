@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 181 181" role="img" aria-label="Builder Lead Converter">
+  <title>Builder Lead Converter</title>
+  <!-- BLC logo mark (icon only, wordmark dropped) with thicker strokes so it stays
+       legible at favicon sizes. Colors from brand/blc.yaml. -->
+  <g fill="none" stroke-width="12" stroke-linecap="round" stroke-linejoin="round" transform="translate(0 10)">
+    <path d="M31 58V146h57V70L41 103" stroke="#1f74b7"/>
+    <path d="M32 30v25" stroke="#1f74b7"/>
+    <path d="M9 80 101 16l71 51v24" stroke="#28864b"/>
+    <path d="M97 83v63h74" stroke="#454545"/>
+    <path d="M113 66v80" stroke="#454545"/>
+  </g>
+</svg>

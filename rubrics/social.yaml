@@ -1,0 +1,312 @@
+# Social Media audit rubric (standalone Social Score — NOT folded into the website composite).
+#
+# Scored by the same engine as seo.yaml/uxui.yaml via scoring.score_social_audit(); facts
+# come from apps/worker/stages/social/extractor.py (fact_path values are social.*).
+# Calibrated against tests/fixtures/social_instagram_{strong,weak}.json (strong scores high,
+# weak scores low — see tests/unit/test_social_scoring.py). Tune thresholds against real
+# example accounts in the niche being audited before treating scores as authoritative.
+#
+# v2 (2026): added content-depth rules (business/creator account, video share, posting
+# consistency, hashtag usage) scoring facts the extractor already derives from the sampled
+# posts. Several more detail facts (content mix, views, follower ratio, like:comment, caption
+# CTA) are surfaced in the report's content-insights section without being scored here.
+#
+# v3 (2026): fact-semantics calibration in the extractor, no rule changes — video share is
+# aggregated over non-YouTube profiles only (a channel is definitionally 100% video, which
+# made the video-share rule vacuous); Facebook post typing no longer counts a generic reach
+# field as video; hashtag counting requires at least one letter (so "#1" doesn't count); the
+# Instagram business-account flag is tri-state (missing => unknown => the rule rescales).
+#
+# v4 (2026, SAE-7..13 — domain-expert review): added profile-quality/consistency rules the
+# extractor now derives — handle consistency across platforms, a substantive (non-blank) bio,
+# a declared business category (feed platforms only), website<->social phone (NAP) match, and a
+# Google Business Profile reviews signal (from the Places API, combined audit only). All are
+# skip_if_missing where the signal is inapplicable (a single profile, a YouTube-only audit, a
+# standalone social audit with no website phone, or no Google listing) so they rescale, never
+# false-fail — so a keyless/standalone audit scores exactly as it did under v3.
+#
+# v5 (2026): fact-semantics recalibration only — posts_per_month/avg_posts_per_month now
+# normalize on the shared 30.44-day average month (was 30), matching the GSC monthly figures
+# in the same report; cadence facts shift ~+1.5%. No rule or threshold changes.
+#
+# v6 (2026): presentation metadata only — numeric rules now declare their display `unit`
+# ("%", " days", "/month", ...), consumed by the report's quantified metric lines instead of a
+# fact-path heuristic (the heuristic remains the fallback for stored pre-v6 breakdowns). No
+# rule, threshold, or weight change; scores are identical to v5.
+version: "phase2-social-v6"
+category: social
+max_score: 100
+normalization: rescale_to_max
+
+rules:
+  - id: social.collection.complete
+    description: Social data collection completed for the requested handles.
+    weight: 1
+    fact_path: social.status
+    evaluator: exact_match
+    params:
+      full_credit: complete
+    impact: high
+    tier: quick_win
+    finding_label: Social data could not be fully collected
+    remediation: Re-run the audit; confirm the handles are public and spelled correctly.
+    surface_as_finding: false
+
+  - id: social.profile.complete
+    description: Profiles have a complete bio, website link, and name.
+    weight: 10
+    fact_path: social.summary.profiles_complete_pct
+    unit: "%"
+    evaluator: threshold
+    params:
+      min: 100
+      partial_min: 60
+    impact: high
+    tier: quick_win
+    finding_label: Incomplete social profiles
+    remediation: Fill in the bio, website link, contact button, and business category on every profile.
+
+  - id: social.posting.cadence
+    description: Accounts post consistently (posts per month).
+    weight: 9
+    fact_path: social.summary.avg_posts_per_month
+    unit: "/month"
+    evaluator: threshold
+    params:
+      min: 8
+      partial_min: 4
+    skip_if_missing: true
+    impact: high
+    tier: mid_term
+    finding_label: Infrequent posting
+    remediation: Publish on a steady cadence (aim for ~2+ posts/week) to stay visible in feeds.
+
+  - id: social.posting.recency
+    description: Accounts posted recently (days since the last post; lower is better).
+    weight: 8
+    fact_path: social.summary.days_since_last_post
+    unit: " days"
+    evaluator: threshold
+    params:
+      max: 14
+      partial_max: 30
+    skip_if_missing: true
+    impact: high
+    tier: quick_win
+    finding_label: Stale social presence
+    remediation: Resume regular posting; a dormant feed signals an inactive business to prospects.
+
+  - id: social.engagement.rate
+    description: Posts earn meaningful engagement relative to follower count (%).
+    weight: 9
+    fact_path: social.summary.avg_engagement_rate_pct
+    unit: "%"
+    evaluator: threshold
+    params:
+      min: 2
+      partial_min: 1
+    skip_if_missing: true
+    impact: medium
+    tier: mid_term
+    finding_label: Low engagement
+    remediation: Post engaging content and Reels; ask questions and reply to comments to lift engagement.
+
+  - id: social.link_in_bio
+    description: At least one profile links out to the website or a lead-capture page.
+    weight: 8
+    fact_path: social.summary.profiles_with_link_in_bio
+    evaluator: threshold
+    params:
+      min: 1
+    impact: high
+    tier: quick_win
+    finding_label: No link in bio
+    remediation: Add a link in bio to the website or a lead-capture/contact page on each profile.
+
+  - id: social.cta.present
+    description: Profiles include a clear call-to-action (book, call, message, quote).
+    weight: 7
+    fact_path: social.summary.profiles_with_cta
+    evaluator: threshold
+    params:
+      min: 1
+    impact: medium
+    tier: quick_win
+    finding_label: No call-to-action on profiles
+    remediation: Enable a contact/booking action button and state a clear CTA in the bio.
+
+  - id: social.content.visual_mix
+    description: Accounts publish video/Reels content, not only static images.
+    weight: 5
+    fact_path: social.summary.has_video_content
+    evaluator: boolean
+    impact: low
+    tier: mid_term
+    finding_label: No video content
+    remediation: Publish short-form video/Reels; video typically drives the most reach and discovery.
+
+  - id: social.coverage.platforms
+    description: The brand maintains a presence on more than one relevant platform.
+    weight: 6
+    fact_path: social.summary.platforms_audited
+    evaluator: threshold
+    params:
+      min: 2
+      partial_min: 1
+    impact: medium
+    tier: mid_term
+    finding_label: Limited platform coverage
+    remediation: Maintain a presence on the platforms where your audience is active (e.g. Instagram and Facebook).
+
+  - id: social.branding.avatar
+    description: Profiles use a consistent logo/brand avatar.
+    weight: 5
+    fact_path: social.summary.profiles_with_logo_avatar
+    evaluator: threshold
+    params:
+      min: 1
+    impact: low
+    tier: quick_win
+    finding_label: Inconsistent profile branding
+    remediation: Use the same logo, handle, and brand colors across every profile for recognizability.
+
+  - id: social.profile.business_account
+    description: Profiles are set up as Business/Creator accounts (analytics + contact actions).
+    weight: 7
+    fact_path: social.summary.profiles_business_account
+    evaluator: threshold
+    params:
+      min: 1
+    # None when no audited profile is on a platform with a Business/Creator-account concept
+    # (e.g. a YouTube-only audit) -> rescale away rather than vacuously failing the rule.
+    skip_if_missing: true
+    impact: medium
+    tier: quick_win
+    finding_label: Not using a Business/Creator account
+    remediation: Switch each profile to a Business/Creator account to unlock insights, contact buttons, and ads.
+
+  - id: social.content.video_share
+    description: A healthy share of posts are video/Reels (video drives the most reach).
+    weight: 6
+    fact_path: social.summary.video_share_pct
+    unit: "%"
+    evaluator: threshold
+    params:
+      min: 25
+      partial_min: 10
+    skip_if_missing: true
+    impact: medium
+    tier: mid_term
+    finding_label: Too little video content
+    remediation: Aim for ~1 in 4 posts to be short-form video/Reels — it earns the most reach and discovery.
+
+  - id: social.posting.consistency
+    description: Posting is regular, without long gaps (longest gap between posts, in days).
+    weight: 6
+    fact_path: social.summary.max_posting_gap_days
+    unit: " days"
+    evaluator: threshold
+    params:
+      max: 45
+      partial_max: 60
+    skip_if_missing: true
+    impact: medium
+    tier: mid_term
+    finding_label: Irregular posting (long gaps)
+    remediation: Keep a consistent schedule; long gaps lose momentum with the algorithm and followers.
+
+  - id: social.content.hashtags
+    description: Posts use hashtags to extend reach to non-followers (avg hashtags per post).
+    weight: 4
+    fact_path: social.summary.avg_hashtags_per_post
+    unit: "/post"
+    evaluator: threshold
+    params:
+      min: 3
+      partial_min: 1
+    skip_if_missing: true
+    impact: low
+    tier: quick_win
+    finding_label: Few or no hashtags
+    remediation: Add a handful of relevant, location- and niche-specific hashtags to each post to widen reach.
+
+  # --- v4: profile-quality & consistency (SAE-7..10) ------------------------------------------
+  - id: social.branding.handle_consistency
+    description: The brand uses a consistent handle/username across platforms.
+    weight: 4
+    fact_path: social.summary.handles_consistent
+    evaluator: boolean
+    # None when there are fewer than two comparable handles -> nothing to compare -> rescale.
+    skip_if_missing: true
+    impact: low
+    tier: quick_win
+    finding_label: Inconsistent handles across platforms
+    remediation: Use the same @handle/username on every platform so customers reach the right accounts.
+
+  - id: social.profile.bio_quality
+    description: Profiles have a substantive, descriptive bio (not blank or a bare name).
+    weight: 5
+    fact_path: social.summary.profiles_with_substantive_bio
+    evaluator: threshold
+    params:
+      min: 1
+    impact: medium
+    tier: quick_win
+    finding_label: Thin or missing profile bio
+    remediation: Write a clear bio that says what you do, who you serve, and the next step (call, book, or request a quote).
+
+  - id: social.local.business_category
+    description: Profiles declare a business category so they surface in the right searches.
+    weight: 5
+    fact_path: social.summary.category_coverage_pct
+    unit: "%"
+    evaluator: threshold
+    params:
+      min: 100
+      partial_min: 50
+    # None when no feed (non-YouTube) profile is present -> the category concept doesn't apply.
+    skip_if_missing: true
+    impact: medium
+    tier: quick_win
+    finding_label: Missing business category
+    remediation: Set a specific business category (e.g. Contractor, Remodeler, Home Builder) on each Facebook/Instagram profile.
+
+  - id: social.local.category_relevance
+    description: The declared business category matches the business's niche/services.
+    weight: 4
+    fact_path: social.summary.category_matches_niche
+    evaluator: boolean
+    # None when the niche can't be classified or no category is set -> skip (never a false finding).
+    skip_if_missing: true
+    impact: low
+    tier: quick_win
+    finding_label: Business category does not match your services
+    remediation: Pick the most specific category for your trade (e.g. Home Builder, Remodeler, Roofing Contractor) instead of a generic one like "Local Business".
+
+  - id: social.nap.consistency
+    description: The phone number matches between the website and the social profiles (NAP consistency).
+    weight: 4
+    fact_path: social.summary.nap_phone_consistent
+    evaluator: boolean
+    # Set only in a combined (website + social) audit; None on a standalone social audit -> skip.
+    skip_if_missing: true
+    impact: medium
+    tier: quick_win
+    finding_label: Phone number differs between the website and social profiles
+    remediation: Use one identical business phone number on the website, Google Business Profile, and every social profile.
+
+  - id: social.reputation.google_reviews
+    description: The business has a healthy volume of Google reviews (a top local-ranking/trust signal).
+    weight: 5
+    fact_path: social.summary.google_review_count
+    unit: " reviews"
+    evaluator: threshold
+    params:
+      min: 10
+      partial_min: 1
+    # Set only when the Google Places lookup succeeded (combined audit + key); None otherwise -> skip.
+    skip_if_missing: true
+    impact: medium
+    tier: mid_term
+    finding_label: Few or no Google reviews
+    remediation: Ask satisfied customers for Google reviews — review volume and star rating are among the strongest local-search and trust signals.

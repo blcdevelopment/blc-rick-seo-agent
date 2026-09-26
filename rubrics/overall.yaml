@@ -1,0 +1,16 @@
+# Overall Lead-Generation Readiness rubric (combined audit only).
+#
+# Blends the website Lead-Gen composite (SEO + UX/UI, computed by composite.yaml and left
+# UNTOUCHED) with the standalone Social Score into a single 0-100 headline number, shown at the
+# end of a combined audit report.
+#
+# Weighting rationale: the website is the bottom-of-funnel lead-capture surface (forms, calls,
+# high-intent search traffic convert there), so it carries the majority weight; social media is
+# top-of-funnel demand generation and nurture, meaningful but secondary. Tune the two weights
+# below to recalibrate; they must sum to 1.0. Bump `version` on any change (recorded for
+# reproducibility). If the social audit produced no score, the readiness score rescales to the
+# website Lead-Gen score alone (social weight drops out).
+version: phase2-overall-v1
+max_score: 100
+website_weight: 0.70
+social_weight: 0.30

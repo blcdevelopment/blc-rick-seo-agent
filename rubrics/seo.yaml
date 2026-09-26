@@ -1,0 +1,655 @@
+# v12: no scoring changes — the three presentation-level merge pairs (which finding folds
+# into which when both surface) moved from content_plan code into per-rule `merged_into`
+# metadata here, so a rule rename/split updates the pair in the same file.
+version: "phase2-seo-v12"
+category: seo
+max_score: 100
+normalization: rescale_to_max
+# Each rule carries content-plan metadata used to author findings/recommendations
+# deterministically (see docs/RUBRICS.md §8):
+#   impact              - importance when the rule fails (high|medium|low)
+#   tier                - remediation horizon (quick_win|mid_term|long_term)
+#   finding_label       - user-facing problem statement (no internal rule IDs)
+#   remediation         - imperative action sentence
+#   surface_as_finding  - false for non-actionable meta/health rules
+rules:
+  - id: seo.collection.complete
+    description: SEO facts were extracted successfully.
+    weight: 4
+    fact_path: seo.status
+    evaluator: exact_match
+    params:
+      full_credit: complete
+    impact: high
+    tier: quick_win
+    surface_as_finding: false
+
+  - id: seo.title.present_all_pages
+    description: Page titles are present across crawled pages.
+    weight: 8
+    fact_path: seo.summary.titles_present_pct
+    evaluator: threshold
+    params:
+      min: 100
+      partial_min: 80
+    impact: high
+    tier: quick_win
+    finding_label: Some pages are missing a title tag
+    remediation: Add a unique, descriptive title tag to every page.
+
+  - id: seo.homepage_title.reasonable_length
+    description: Homepage title length is in a useful search-result range.
+    weight: 7
+    fact_path: seo.pages[0].title.is_reasonable_length
+    evaluator: boolean
+    impact: medium
+    tier: quick_win
+    finding_label: Homepage title length is outside the ideal search-result range
+    remediation: Rewrite the homepage title to roughly 30-65 characters.
+
+  - id: seo.meta_description.present_all_pages
+    description: Meta descriptions are present across crawled pages.
+    weight: 10
+    fact_path: seo.summary.meta_descriptions_present_pct
+    evaluator: threshold
+    params:
+      min: 100
+      partial_min: 70
+    impact: high
+    tier: quick_win
+    finding_label: Meta descriptions are missing on some pages
+    remediation: Add a unique 70-160 character meta description to every page.
+
+  - id: seo.homepage_meta_description.reasonable_length
+    description: Homepage meta description length is in a useful search-result range.
+    weight: 8
+    fact_path: seo.pages[0].meta_description.is_reasonable_length
+    evaluator: boolean
+    impact: medium
+    tier: quick_win
+    finding_label: Homepage meta description length is outside the ideal range
+    remediation: Rewrite the homepage meta description to roughly 70-160 characters.
+
+  - id: seo.h1.present_once
+    description: Crawled pages use one clear H1.
+    weight: 9
+    fact_path: seo.summary.h1_present_pct
+    evaluator: threshold
+    params:
+      min: 100
+      partial_min: 80
+    impact: high
+    tier: quick_win
+    finding_label: Pages do not use a single clear H1 heading
+    remediation: Give each page exactly one descriptive H1 heading.
+
+  - id: seo.homepage.canonical
+    description: Homepage has a canonical URL.
+    weight: 6
+    fact_path: seo.pages[0].canonical
+    evaluator: presence
+    impact: medium
+    tier: mid_term
+    finding_label: The homepage is missing a canonical URL
+    remediation: Add a canonical link tag to the homepage to prevent duplicate-URL dilution.
+
+  - id: seo.schema.present
+    description: At least one crawled page includes schema markup.
+    weight: 9
+    fact_path: seo.summary.pages_with_schema
+    evaluator: threshold
+    params:
+      min: 1
+    impact: medium
+    tier: mid_term
+    finding_label: No structured data (schema markup) was found
+    remediation: Add relevant schema.org structured data (for example LocalBusiness) to key pages.
+
+  - id: seo.schema.business_identity
+    description: A page declares Organization / LocalBusiness identity via structured data.
+    weight: 7
+    fact_path: seo.summary.pages_with_organization_schema
+    evaluator: threshold
+    params:
+      min: 1
+    impact: medium
+    tier: mid_term
+    finding_label: No business-identity structured data (Organization / LocalBusiness)
+    remediation: Add LocalBusiness (or Organization) JSON-LD with name, address, phone, and URL so
+      search engines can build a rich business profile.
+
+  - id: seo.schema.valid_json_ld
+    description: No crawled page contains malformed JSON-LD structured data.
+    weight: 4
+    fact_path: seo.summary.pages_with_invalid_json_ld
+    evaluator: threshold
+    params:
+      max: 0
+    impact: medium
+    tier: quick_win
+    finding_label: Some structured data is malformed and ignored by search engines
+    remediation: Fix the malformed JSON-LD so it parses — invalid structured data is silently
+      dropped and earns no rich-result eligibility.
+
+  - id: seo.schema.breadcrumb
+    description: The site uses BreadcrumbList structured data for navigation context.
+    weight: 3
+    fact_path: seo.summary.has_breadcrumb_schema
+    evaluator: boolean
+    impact: low
+    tier: mid_term
+    finding_label: No BreadcrumbList structured data was found
+    remediation: Add BreadcrumbList JSON-LD to deeper pages so search results can show a
+      breadcrumb trail.
+
+  - id: seo.images.alt_coverage
+    description: Image alt-text coverage is strong across crawled pages.
+    weight: 8
+    fact_path: seo.summary.image_alt_coverage_pct
+    evaluator: threshold
+    params:
+      min: 90
+      partial_min: 60
+    impact: medium
+    tier: quick_win
+    finding_label: Image alt-text coverage is low
+    remediation: Add descriptive alt text to all meaningful images.
+
+  - id: seo.indexability.no_noindex_pages
+    description: No crawled pages include a noindex directive.
+    weight: 5
+    fact_path: seo.summary.noindex_pages
+    evaluator: exact_match
+    params:
+      full_credit: 0
+    impact: high
+    tier: quick_win
+    finding_label: One or more crawled pages block search indexing (noindex)
+    remediation: Remove noindex directives from pages that should appear in search results.
+
+  # Security hygiene (P2-18). HTTPS is a ranking signal and a visible trust marker; mixed
+  # content (http subresources on an https page) is blocked/flagged by browsers and Google.
+  - id: seo.security.https
+    description: All crawled pages are served over HTTPS.
+    weight: 3
+    fact_path: seo.summary.all_pages_https
+    evaluator: boolean
+    impact: high
+    tier: quick_win
+    finding_label: The site is not served fully over HTTPS
+    remediation: Serve every page over HTTPS and redirect http:// URLs to their https:// equivalents.
+
+  - id: seo.security.no_mixed_content
+    description: No crawled HTTPS page loads insecure http resources.
+    weight: 5
+    fact_path: seo.summary.pages_with_mixed_content
+    evaluator: threshold
+    params:
+      max: 0
+    impact: medium
+    tier: quick_win
+    finding_label: Some pages load insecure (http) resources on a secure page
+    remediation: Update image, script, and stylesheet URLs to https so browsers stop blocking or
+      warning on mixed content.
+
+  # Answer-engine / AEO content readiness (P2-13). Deterministic content-structure signals that
+  # help readers AND AI answer engines (and classic search) parse, scan, and extract the page.
+  # Framed as content-structure hygiene, NOT a guaranteed AI-citation lever: Google states
+  # structured data does not factor into generative search, and the evidence here is correlational
+  # — so these stay low-weight on purpose. Schema-based AEO (FAQ/LocalBusiness) lives in the
+  # seo.schema.* rules above.
+  - id: seo.aeo.heading_hierarchy
+    description: Pages use a clean heading outline (one H1, then ordered levels with no skips).
+    weight: 5
+    fact_path: seo.summary.all_pages_heading_hierarchy_ok
+    evaluator: boolean
+    impact: medium
+    tier: quick_win
+    finding_label: The heading outline repeats the H1 or skips heading levels
+    remediation: Use exactly one H1 per page and step heading levels in order (H1 then H2 then H3)
+      so readers, assistive tech, and search engines can follow the page structure.
+    # Same site change as the H1 rule; fold into its card when both surface.
+    merged_into: seo.h1.present_once
+
+  - id: seo.aeo.question_headings
+    description: Subheadings answer the questions buyers actually ask.
+    weight: 3
+    fact_path: seo.summary.total_question_headings
+    evaluator: threshold
+    params:
+      min: 2
+      partial_min: 1
+    impact: low
+    tier: mid_term
+    finding_label: Few or no subheadings are phrased as the questions buyers ask
+    remediation: Add question-style H2/H3 subheadings (for example "How much does a custom home
+      cost?") so the page matches how buyers and AI assistants phrase their queries.
+
+  - id: seo.aeo.extractable_structure
+    description: Content uses scannable lists or comparison tables.
+    weight: 3
+    fact_path: seo.summary.has_extractable_structure
+    evaluator: boolean
+    impact: low
+    tier: mid_term
+    finding_label: Content has few scannable lists or comparison tables
+    remediation: Present steps, services, and specs as bulleted lists or tables so visitors can
+      scan them and answer engines can lift them cleanly.
+
+  # Local-SEO fundamentals (P2-17). Machine-readable + visible signals a directory or AI assistant
+  # uses to resolve the business to a place: complete NAP in LocalBusiness/Organization JSON-LD, a
+  # declared service area, a Google Business Profile / Maps link, and a visible address block.
+  - id: seo.local.nap_schema
+    description: Structured data carries a complete business NAP (name, address, phone).
+    weight: 6
+    fact_path: seo.summary.has_complete_nap_schema
+    evaluator: boolean
+    impact: medium
+    tier: mid_term
+    finding_label: Business structured data is missing a complete name, address, and phone
+    remediation: Complete the LocalBusiness JSON-LD with name, a full PostalAddress, and a
+      telephone so search engines and AI assistants can resolve the business to a location.
+
+  - id: seo.local.service_area
+    description: Structured data declares the geographic service area.
+    weight: 3
+    fact_path: seo.summary.has_service_area_markup
+    evaluator: boolean
+    impact: low
+    tier: mid_term
+    finding_label: No service area or geo is declared in structured data
+    remediation: Add areaServed (or geo coordinates) to the LocalBusiness JSON-LD so local
+      searches in the cities you serve can match the business.
+
+  - id: seo.local.map_or_gbp
+    description: A page links to the Google Business Profile or a map location.
+    weight: 3
+    fact_path: seo.summary.has_map_or_gbp_link
+    evaluator: boolean
+    impact: low
+    tier: quick_win
+    finding_label: No Google Business Profile or map link was found
+    remediation: Link to the Google Business Profile (or an embedded map) so visitors can verify
+      the location and reviews, reinforcing the local entity.
+
+  - id: seo.local.visible_address
+    description: The business address is visible on the page in an address block.
+    weight: 3
+    fact_path: seo.summary.has_visible_address
+    evaluator: boolean
+    impact: low
+    tier: quick_win
+    finding_label: No visible business address block was found
+    remediation: Show the business address in a visible address block that matches the structured
+      data so visitors and search engines see a consistent NAP.
+
+  # Static accessibility screen (P2-15). A deterministic WCAG A/AA subset read from stored HTML
+  # only (no browser / JS / computed CSS, so no axe-core) — the low-false-positive, structural
+  # checks that are also the highest-prevalence real-world failures (WebAIM Million). The
+  # element-dependent count rules skip_if_missing so a page with no forms/buttons/links/id-refs
+  # rescales instead of being vacuously credited. Render-dependent criteria (colour contrast,
+  # focus order, reflow) are out of scope by design and documented as a known limitation.
+  - id: seo.a11y.html_lang
+    description: Every crawled page declares its language on the html element.
+    weight: 3
+    fact_path: seo.summary.all_pages_have_lang
+    evaluator: boolean
+    impact: medium
+    tier: quick_win
+    finding_label: The page does not declare its language
+    remediation: Set a lang attribute on the page's html element so screen readers pronounce the
+      content correctly.
+
+  - id: seo.a11y.viewport_zoom
+    description: The viewport meta tag does not block pinch/zoom.
+    weight: 4
+    fact_path: seo.summary.viewport_allows_zoom
+    evaluator: boolean
+    skip_if_missing: true
+    impact: high
+    tier: quick_win
+    finding_label: The page prevents visitors from zooming in
+    remediation: Remove user-scalable=no and any maximum-scale below 2 from the viewport tag so
+      low-vision visitors can enlarge the page.
+
+  - id: seo.a11y.main_landmark
+    description: Every crawled page exposes a main content landmark.
+    weight: 3
+    fact_path: seo.summary.all_pages_have_main_landmark
+    evaluator: boolean
+    impact: low
+    tier: mid_term
+    finding_label: The page has no main content landmark
+    remediation: Wrap the primary page content in a main element (or role="main") so assistive
+      tech can skip straight to it.
+
+  - id: seo.a11y.no_positive_tabindex
+    description: No element overrides the natural keyboard tab order with a positive tabindex.
+    weight: 2
+    fact_path: seo.summary.total_positive_tabindex
+    evaluator: threshold
+    params:
+      max: 0
+      partial_max: 2
+    impact: low
+    tier: mid_term
+    finding_label: Some elements override the natural keyboard tab order
+    remediation: Remove positive tabindex values so keyboard focus follows the visual reading order.
+
+  - id: seo.a11y.form_controls_labeled
+    description: Form fields have a programmatic label.
+    weight: 5
+    fact_path: seo.summary.unlabeled_form_controls
+    evaluator: threshold
+    skip_if_missing: true
+    params:
+      max: 0
+      partial_max: 1
+    impact: high
+    tier: quick_win
+    finding_label: Some form fields have no programmatic label
+    remediation: Give every form field a real, associated label (a label element, aria-label, or
+      aria-labelledby) so screen-reader users know what to enter.
+
+  - id: seo.a11y.links_have_name
+    description: Links have discernible text or an accessible name.
+    weight: 4
+    fact_path: seo.summary.empty_links
+    evaluator: threshold
+    skip_if_missing: true
+    params:
+      max: 0
+      partial_max: 2
+    impact: medium
+    tier: quick_win
+    finding_label: Some links have no readable text
+    remediation: Give every link descriptive text or an accessible label, especially icon-only links.
+
+  - id: seo.a11y.buttons_have_name
+    description: Buttons have discernible text or an accessible name.
+    weight: 4
+    fact_path: seo.summary.empty_buttons
+    evaluator: threshold
+    skip_if_missing: true
+    params:
+      max: 0
+      partial_max: 1
+    impact: medium
+    tier: quick_win
+    finding_label: Some buttons have no readable label
+    remediation: Give every button clear text or an accessible label so its action is announced.
+
+  - id: seo.a11y.unique_referenced_ids
+    description: Element IDs referenced by labels or ARIA are unique.
+    weight: 2
+    fact_path: seo.summary.duplicate_referenced_ids
+    evaluator: threshold
+    skip_if_missing: true
+    params:
+      max: 0
+    impact: medium
+    tier: mid_term
+    finding_label: A label or accessibility reference points to a duplicated element ID
+    remediation: Make element IDs unique so each label and accessibility reference resolves to the
+      correct control.
+
+  - id: seo.internal_links.depth
+    description: Internal linking gives visitors and crawlers useful next steps.
+    weight: 6
+    fact_path: seo.summary.total_internal_links
+    evaluator: threshold
+    params:
+      min: 5
+      partial_min: 2
+    impact: low
+    tier: mid_term
+    finding_label: Internal linking is thin
+    remediation: Add internal links between related pages to guide visitors and crawlers.
+
+  - id: seo.psi.mobile_performance
+    description: Mobile PageSpeed performance contributes to search and user experience.
+    weight: 10
+    fact_path: psi.summary.avg_mobile_performance
+    evaluator: linear_scale
+    skip_if_missing: true
+    params:
+      input_range: [0, 100]
+    impact: high
+    tier: long_term
+    finding_label: Mobile page performance needs improvement
+    remediation: Improve mobile load speed by optimizing images, scripts, and server response time.
+
+  - id: seo.psi.desktop_performance
+    description: Desktop PageSpeed performance is healthy.
+    weight: 10
+    fact_path: psi.summary.avg_desktop_performance
+    evaluator: linear_scale
+    skip_if_missing: true
+    params:
+      input_range: [0, 100]
+    impact: medium
+    tier: long_term
+    finding_label: Desktop page performance needs improvement
+    remediation: Improve desktop load speed by optimizing images, scripts, and server response time.
+
+  # Real-user Core Web Vitals (CrUX field data, 75th percentile). Thresholds are Google's
+  # official Good / Needs-Improvement boundaries (web.dev): LCP 2.5s/4s, INP 200ms/500ms,
+  # CLS 0.1/0.25. skip_if_missing so sites without enough traffic for field data aren't penalized.
+  - id: seo.cwv.lcp
+    description: Real-user Largest Contentful Paint (loading) is fast.
+    weight: 7
+    fact_path: psi.summary.crux.lcp_p75_ms
+    evaluator: threshold
+    skip_if_missing: true
+    params:
+      max: 2500
+      partial_max: 4000
+    impact: high
+    tier: long_term
+    finding_label: Real-user loading speed (Largest Contentful Paint) is slow
+    remediation: Improve the largest above-the-fold element's load — optimize the hero image,
+      preconnect critical origins, and cut render-blocking CSS/JS.
+
+  - id: seo.cwv.inp
+    description: Real-user Interaction to Next Paint (responsiveness) is fast.
+    weight: 6
+    fact_path: psi.summary.crux.inp_p75_ms
+    evaluator: threshold
+    skip_if_missing: true
+    params:
+      max: 200
+      partial_max: 500
+    impact: high
+    tier: long_term
+    finding_label: Real-user interaction responsiveness (INP) is slow
+    remediation: Reduce main-thread work — break up long JavaScript tasks and defer non-essential
+      scripts so taps and clicks respond quickly.
+
+  - id: seo.cwv.cls
+    description: Real-user Cumulative Layout Shift (visual stability) is low.
+    weight: 5
+    fact_path: psi.summary.crux.cls_p75
+    evaluator: threshold
+    skip_if_missing: true
+    params:
+      max: 0.1
+      partial_max: 0.25
+    impact: medium
+    tier: long_term
+    finding_label: The page shifts around as it loads (Cumulative Layout Shift)
+    remediation: Reserve space for images, ads, and embeds (set width/height) and avoid inserting
+      content above existing content so the layout stays stable.
+
+  - id: seo.technical_crawl.no_broken_internal_urls
+    description: The technical crawl found no site URLs returning errors (for example 404 not found).
+    weight: 8
+    fact_path: external_seo.technical_crawl.summary.client_error_internal_urls
+    evaluator: threshold
+    skip_if_missing: true
+    params:
+      max: 0
+      partial_max: 5
+    impact: high
+    tier: quick_win
+    finding_label: Some pages or links on the site lead to error pages
+    remediation: Fix the broken page or redirect the old address to the correct live page.
+
+  - id: seo.technical_crawl.indexable_urls
+    description: The technical crawl found few or no pages that block Google from indexing them.
+    weight: 6
+    fact_path: external_seo.technical_crawl.summary.non_indexable_internal_urls
+    evaluator: threshold
+    skip_if_missing: true
+    params:
+      max: 0
+      partial_max: 5
+    impact: high
+    tier: quick_win
+    finding_label: Some pages block Google from showing them in search results
+    remediation: Review non-indexable URLs and remove blocking directives from pages that should rank.
+
+  - id: seo.technical_crawl.canonicals
+    description: The technical crawl found few or no pages missing a canonical URL.
+    weight: 5
+    fact_path: external_seo.technical_crawl.summary.missing_canonicals
+    evaluator: threshold
+    skip_if_missing: true
+    params:
+      max: 0
+      partial_max: 5
+    impact: medium
+    tier: mid_term
+    finding_label: Some pages are missing a canonical URL
+    remediation: Add a self-referencing canonical link tag to each page so duplicate or
+      parameter URLs consolidate their ranking signals.
+
+  - id: seo.technical_crawl.redirect_chains
+    description: Internal links avoid multi-hop redirect chains.
+    weight: 5
+    fact_path: external_seo.technical_crawl.summary.redirect_chain_internal_urls
+    evaluator: threshold
+    skip_if_missing: true
+    params:
+      max: 0
+      partial_max: 3
+    impact: medium
+    tier: mid_term
+    finding_label: Some internal links pass through a redirect chain (2+ hops)
+    remediation: Point internal links straight at the final URL so crawlers and visitors skip
+      the extra redirect hops.
+
+  - id: seo.technical_crawl.missing_titles
+    description: The technical crawl found no pages missing title tags.
+    weight: 6
+    fact_path: external_seo.technical_crawl.summary.missing_titles
+    evaluator: threshold
+    skip_if_missing: true
+    params:
+      max: 0
+      partial_max: 5
+    impact: high
+    tier: quick_win
+    finding_label: Pages are missing title tags
+    remediation: Add unique, descriptive title tags to every indexable page.
+
+  - id: seo.technical_crawl.duplicate_titles
+    description: The technical crawl found few or no pages sharing the same title tag.
+    weight: 5
+    fact_path: external_seo.technical_crawl.summary.duplicate_titles
+    evaluator: threshold
+    skip_if_missing: true
+    params:
+      max: 0
+      partial_max: 5
+    impact: medium
+    tier: quick_win
+    finding_label: Duplicate title tags were found
+    remediation: Rewrite duplicate titles so every important page has a distinct search result angle.
+
+  - id: seo.technical_crawl.missing_meta_descriptions
+    description: The technical crawl found no pages missing meta descriptions.
+    weight: 6
+    fact_path: external_seo.technical_crawl.summary.missing_meta_descriptions
+    evaluator: threshold
+    skip_if_missing: true
+    params:
+      max: 0
+      partial_max: 10
+    impact: medium
+    tier: quick_win
+    finding_label: Pages are missing meta descriptions
+    remediation: Add unique, click-focused meta descriptions to key pages.
+
+  - id: seo.technical_crawl.missing_h1
+    description: The technical crawl found no pages missing H1 headings.
+    weight: 5
+    fact_path: external_seo.technical_crawl.summary.missing_h1
+    evaluator: threshold
+    skip_if_missing: true
+    params:
+      max: 0
+      partial_max: 5
+    impact: medium
+    tier: quick_win
+    finding_label: Pages are missing H1 headings
+    remediation: Add one clear, descriptive H1 heading to each important page.
+    # Same site change as the H1 rule; fold into its card when both surface.
+    merged_into: seo.h1.present_once
+
+  - id: seo.technical_crawl.missing_image_alt
+    description: The technical crawl found few or no images missing alt text.
+    weight: 5
+    fact_path: external_seo.technical_crawl.summary.images_missing_alt
+    evaluator: threshold
+    skip_if_missing: true
+    params:
+      max: 0
+      partial_max: 20
+    impact: medium
+    tier: quick_win
+    finding_label: Images are missing alt text
+    remediation: Add descriptive alt text to meaningful images.
+    # Same site change as the on-page alt-coverage rule; fold into its card when both surface.
+    merged_into: seo.images.alt_coverage
+
+  - id: seo.gsc.low_ctr_pages
+    description: Search Console shows few high-impression pages with weak CTR.
+    weight: 6
+    fact_path: external_seo.gsc.summary.high_impression_low_ctr_pages
+    evaluator: threshold
+    skip_if_missing: true
+    params:
+      max: 0
+      partial_max: 5
+    impact: high
+    tier: mid_term
+    finding_label: High-impression pages have low click-through rates
+    remediation: Rewrite titles and meta descriptions for high-impression pages with weak CTR.
+
+  - id: seo.gsc.ranking_opportunities
+    description: Search Console shows few keywords sitting just below stronger ranking positions.
+    weight: 5
+    fact_path: external_seo.gsc.summary.ranking_opportunities
+    evaluator: threshold
+    skip_if_missing: true
+    params:
+      max: 0
+      partial_max: 10
+    impact: medium
+    tier: mid_term
+    finding_label: Search Console shows near-page-one keyword opportunities
+    remediation: Improve pages ranking in positions 4-20 with stronger content, internal links, and title targeting.
+
+  - id: seo.gsc.url_inspection_indexing
+    description: URL Inspection found no priority URLs missing from Google.
+    weight: 6
+    fact_path: external_seo.url_inspection.summary.not_on_google
+    evaluator: threshold
+    skip_if_missing: true
+    params:
+      max: 0
+      partial_max: 3
+    impact: high
+    tier: quick_win
+    finding_label: Priority URLs may not be indexed by Google
+    remediation: Review URL Inspection results and fix crawl, indexing, canonical, or quality issues.
