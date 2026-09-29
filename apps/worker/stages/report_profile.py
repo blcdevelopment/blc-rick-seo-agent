@@ -22,7 +22,11 @@ from pydantic import BaseModel, ConfigDict
 
 from apps.shared.config import Settings
 from apps.worker.stages.commentary import deterministic_social_summary
-from apps.worker.stages.content_plan import EXECUTIVE_SUMMARY_CLOSER
+from apps.worker.stages.content_plan import (
+    EXECUTIVE_SUMMARY_CLOSER,
+    HOMEPAGE_LOCATION_LABEL,
+    LOCATION_LABEL,
+)
 
 if TYPE_CHECKING:
     from apps.worker.stages.report_payload import ReportPayload
@@ -36,6 +40,12 @@ FALLBACK_SUMMARY_ADVICE = (
     "Use the prioritized roadmap and score breakdown to address the highest-confidence "
     "lead generation opportunities first."
 )
+# "Start by checking ..." tells the reader where to begin fixing; a teaser only says where the
+# problem was found.
+_TEASER_LOCATION_LABELS = {
+    LOCATION_LABEL: "Where it was found",
+    HOMEPAGE_LOCATION_LABEL: "Found on the homepage",
+}
 TEASER_CTA_MESSAGE = (
     "This audit shows what is holding the site back and why it matters. The step-by-step "
     "fixes, in priority order, are covered in a short one-to-one meeting."
@@ -76,7 +86,15 @@ def apply_report_profile(payload: ReportPayload, settings: Settings) -> ReportPa
         section.model_copy(
             update={
                 "findings": [
-                    finding.model_copy(update={"action_items": [], "tier": ""})
+                    finding.model_copy(
+                        update={
+                            "action_items": [],
+                            "tier": "",
+                            "location_label": _TEASER_LOCATION_LABELS.get(
+                                finding.location_label, finding.location_label
+                            ),
+                        }
+                    )
                     for finding in section.findings
                 ],
                 "recommendations": [],

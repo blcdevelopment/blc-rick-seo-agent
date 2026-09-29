@@ -31,7 +31,7 @@ from apps.worker.stages.social.extractor import profile_link_from_handle
 from apps.worker.stages.social.report import compose_social_report_payload
 
 # Operator endpoints (history, reruns, share links) require a valid Clerk session (no-op when
-# CLERK_ISSUER is unset, except on a production public deployment; see auth.require_user).
+# CLERK_ISSUER is unset, except on a public deployment; see auth.require_user).
 router = APIRouter(prefix="/audits", tags=["audits"], dependencies=[Depends(require_user)])
 # Visitor endpoints (create an audit, poll it, read its report) keep the same Clerk check unless
 # PUBLIC_AUDITS_ENABLED opens them to anyone (auth.require_visitor).
@@ -174,6 +174,17 @@ def create_audit(
     db: DbSession,
 ) -> AuditCreateResponse:
     settings = get_settings()
+    # A public visitor audits a website (social links ride along as a combined audit). A
+    # standalone social audit is not offered by the UI and would spend Apify and OpenAI credit
+    # on anonymous input, so public mode refuses it.
+    if settings.public_audits_enabled and payload.audit_type == "social":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                "Social-only audits are not available. Submit a website URL; social links "
+                "are optional."
+            ),
+        )
     brand_overrides = None
     # White-label branding is an operator feature: an anonymous visitor must not be able to put
     # another brand (or a remote logo) on a report this server renders.

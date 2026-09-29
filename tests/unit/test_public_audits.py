@@ -1,5 +1,6 @@
 """Public audits (Rick edition): visitors create and read audits without signing in, while the
-operator endpoints stay gated, and on a production public deployment without Clerk they are
+operator endpoints stay gated, and on a public deployment (any APP_ENV but local/dev/test) without
+Clerk they are
 closed rather than open."""
 
 from __future__ import annotations
@@ -77,8 +78,10 @@ def test_without_public_mode_every_audit_endpoint_needs_clerk(client_for) -> Non
     assert client.get("/audits/00000000-0000-0000-0000-000000000000").status_code == 401
 
 
-def test_public_production_without_clerk_closes_operator_endpoints(client_for) -> None:
-    client, _ = client_for(public_audits_enabled=True, app_env="production")
+@pytest.mark.parametrize("app_env", ["production", "prod", "staging"])
+def test_public_deployment_without_clerk_closes_operator_endpoints(client_for, app_env) -> None:
+    # Fail closed: any APP_ENV other than local/dev/test counts as a deployment.
+    client, _ = client_for(public_audits_enabled=True, app_env=app_env)
 
     created = _create(client)
     assert created.status_code == 201
@@ -93,6 +96,14 @@ def test_local_public_mode_keeps_operator_endpoints_open_without_clerk(client_fo
     # Same as the parent's local dev: no CLERK_ISSUER means an open API outside production.
     client, _ = client_for(public_audits_enabled=True)
     assert client.get("/audits").status_code == 200
+
+
+def test_public_mode_refuses_social_only_audits(client_for) -> None:
+    client, _ = client_for(public_audits_enabled=True)
+    social = {"audit_type": "social", "social_handles": {"instagram": "acme"}}
+    assert client.post("/audits", json=social).status_code == 422
+    combined = {"audit_type": "combined", "social_handles": {"instagram": "acme"}}
+    assert _create(client, **combined).status_code == 201
 
 
 def test_public_visitors_cannot_white_label_a_report(client_for) -> None:

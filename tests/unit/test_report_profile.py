@@ -37,6 +37,8 @@ from apps.worker.stages import report_payload as report_payload_module
 from apps.worker.stages.content_plan import (
     _ACTION_TITLES,
     EXECUTIVE_SUMMARY_CLOSER,
+    HOMEPAGE_LOCATION_LABEL,
+    LOCATION_LABEL,
     build_content_plan,
 )
 from apps.worker.stages.docx_renderer import render_report_docx
@@ -83,6 +85,8 @@ def _fix_corpus() -> set[str]:
     corpus = {
         EXECUTIVE_SUMMARY_CLOSER,
         FALLBACK_SUMMARY_ADVICE,
+        LOCATION_LABEL,
+        HOMEPAGE_LOCATION_LABEL,
         AXE_FIX,
         AXE_HELP_URL,
         LLM_NARRATIVE,
@@ -321,6 +325,7 @@ def test_full_payload_carries_the_fixes_the_teaser_must_hide(combined: bool) -> 
     assert any(fix in _ACTION_TITLES.values() for fix in leaks)
     assert any(g["recommended_fix"] in leaks for g in TECHNICAL_ISSUE_GUIDANCE.values())
     assert EXECUTIVE_SUMMARY_CLOSER in leaks
+    assert LOCATION_LABEL in leaks and HOMEPAGE_LOCATION_LABEL in leaks
     assert payload["roadmap"] and payload["report_profile"] == "full" and payload["cta"] is None
     if combined:
         assert payload["social_audit"]["findings"][0]["remediation"]

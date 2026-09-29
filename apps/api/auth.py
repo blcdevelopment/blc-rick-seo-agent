@@ -21,6 +21,10 @@ from jwt import PyJWKClient
 from apps.shared.config import get_settings
 
 _UNAUTHORIZED = {"WWW-Authenticate": "Bearer"}
+# APP_ENV values where an open operator API is expected without Clerk (local dev, tests, the QA
+# harness). Anywhere else a public deployment without Clerk closes the operator endpoints, so a
+# typo'd or unexpected APP_ENV ("prod", "staging") can never leave them open.
+_OPEN_WITHOUT_CLERK_ENVS = frozenset({"local", "dev", "development", "test"})
 
 
 @lru_cache(maxsize=4)
@@ -39,14 +43,15 @@ def _extract_token(request: Request) -> str | None:
 def require_user(request: Request) -> str | None:
     """FastAPI dependency: return the Clerk user id (``sub``) or raise 401.
 
-    Returns ``None`` and allows the request when Clerk is not configured — except on a
-    production public deployment (``PUBLIC_AUDITS_ENABLED``), where the operator endpoints
-    this guards must never fall open to the internet: there it answers 403 instead.
+    Returns ``None`` and allows the request when Clerk is not configured — except on a public
+    deployment (``PUBLIC_AUDITS_ENABLED`` with an ``APP_ENV`` other than local/dev/test), where
+    the operator endpoints this guards must never fall open: there it answers 403 instead.
     """
     settings = get_settings()
     issuer = settings.clerk_issuer.rstrip("/")
     if not issuer:
-        if settings.public_audits_enabled and settings.app_env.strip().lower() == "production":
+        app_env = settings.app_env.strip().lower()
+        if settings.public_audits_enabled and app_env not in _OPEN_WITHOUT_CLERK_ENVS:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Operator endpoints are disabled on this public deployment.",

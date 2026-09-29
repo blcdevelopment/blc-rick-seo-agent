@@ -56,6 +56,10 @@ EXECUTIVE_SUMMARY_CLOSER = (
     "Start with the issues that block visitors or search engines first, then move into the "
     "content and conversion improvements."
 )
+# Labels for a finding's example URLs. They point the reader at where to begin fixing, so the
+# teaser report profile rewords them as plain locations (report_profile.py).
+LOCATION_LABEL = "Start by checking"
+HOMEPAGE_LOCATION_LABEL = "Start by checking the homepage"
 
 
 def build_content_plan(
@@ -854,12 +858,12 @@ def _location_bullets(rule: JsonDict, facts: JsonDict) -> tuple[str, list[str]]:
     rule_id = str(rule.get("rule_id") or "")
     examples = _location_examples(rule_id, facts)
     if examples:
-        return "Start by checking", [str(example) for example in examples[:3]]
+        return LOCATION_LABEL, [str(example) for example in examples[:3]]
 
     if "pages[0]" in str(rule.get("fact_path") or ""):
         homepage = _first_page_url(facts)
         if homepage:
-            return "Start by checking the homepage", [homepage]
+            return HOMEPAGE_LOCATION_LABEL, [homepage]
     return "", []
 
 

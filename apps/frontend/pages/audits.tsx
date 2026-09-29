@@ -1,4 +1,4 @@
-import { useApiToken } from "../lib/auth";
+import { PUBLIC_AUDITS, useApiToken } from "../lib/auth";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
@@ -158,7 +158,8 @@ export default function AuditsHistoryPage() {
           </div>
         )}
 
-        <SearchConsoleIntegration />
+        {/* Same rule as the submit page: no Google connect panel in the public build. */}
+        {!PUBLIC_AUDITS && <SearchConsoleIntegration />}
 
         {audits === null && !error && (
           <div className="card muted-card">

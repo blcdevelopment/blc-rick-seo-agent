@@ -49,9 +49,10 @@ class Settings(BaseSettings):
     # Public audits (Rick edition): visitors run an audit and read its report WITHOUT signing in.
     # Opens only the visitor endpoints (create, status, detail, PDF, DOCX); the unguessable job
     # UUID in the report URL is the only key to a report, like a share link. Operator endpoints
-    # (history list, reruns, share links, metrics, Search Console connect) keep the Clerk check,
-    # and on a production public deployment without CLERK_ISSUER they answer 403 instead of
-    # falling open. The frontend's matching build flag is NEXT_PUBLIC_PUBLIC_AUDITS_ENABLED.
+    # (history list, reruns, share links, metrics, Search Console connect) keep the Clerk check;
+    # without CLERK_ISSUER and with any APP_ENV but local/dev/test they answer 403 instead of
+    # falling open. Public mode also refuses standalone social-only audits. The frontend's
+    # matching build flag is NEXT_PUBLIC_PUBLIC_AUDITS_ENABLED.
     public_audits_enabled: bool = False
 
     database_url: str = "postgresql+psycopg://blc:change-me-local@localhost:5432/blc_website_audit"

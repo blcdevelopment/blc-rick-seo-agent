@@ -59,11 +59,16 @@ services:
       AUDIT_ENQUEUE_ENABLED: "true"
       LOCAL_REPORT_STORAGE_DIR: /app/storage/reports
       LOCAL_SCREENSHOT_STORAGE_DIR: /app/storage/screenshots
+      # This edition's switches, pinned here for BOTH api and worker so the PDF (worker) and
+      # the JSON/DOCX (api) can never be rendered with different settings.
+      REPORT_PROFILE: teaser
+      PUBLIC_AUDITS_ENABLED: "true"
+      SEARCH_CONSOLE_ENABLED: "false"
       # Same-origin in prod (UI + /api on one domain), but keep CORS correct anyway.
       API_CORS_ORIGINS: https://blc-rick-seo-agent.invalid
-      # Fail fast if unset: an empty CLERK_ISSUER silently DISABLES API auth
-      # (apps/api/auth.py), which must never happen in production.
-      CLERK_ISSUER: ${CLERK_ISSUER:?set CLERK_ISSUER in .env - empty disables API auth}
+      # Optional here: visitors never sign in, and with PUBLIC_AUDITS_ENABLED + APP_ENV=production
+      # an empty CLERK_ISSUER makes the operator endpoints answer 403 (apps/api/auth.py).
+      CLERK_ISSUER: ${CLERK_ISSUER:-}
     volumes:
       - storage:/app/storage
     depends_on:
@@ -89,6 +94,11 @@ services:
       LOCAL_REPORT_STORAGE_DIR: /app/storage/reports
       LOCAL_SCREENSHOT_STORAGE_DIR: /app/storage/screenshots
       PLAYWRIGHT_BROWSERS_PATH: /root/.cache/ms-playwright
+      # This edition's switches, pinned here for BOTH api and worker so the PDF (worker) and
+      # the JSON/DOCX (api) can never be rendered with different settings.
+      REPORT_PROFILE: teaser
+      PUBLIC_AUDITS_ENABLED: "true"
+      SEARCH_CONSOLE_ENABLED: "false"
       # 4 GB box: keep one browser alive at a time.
       CRAWLER_CONCURRENCY: "1"
     volumes:
@@ -113,14 +123,15 @@ services:
       args:
         NEXT_PUBLIC_API_BASE_URL: https://blc-rick-seo-agent.invalid/api
         NEXT_PUBLIC_APP_NAME: "BLC Website Audit"
-        # Baked at build time — must be set in .env BEFORE `docker compose build`.
-        NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:?set NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY in .env}
-    # No env_file here on purpose: the internet-facing frontend only needs the two
-    # Clerk vars, not the DB password / OpenAI keys that live in the root .env.
+        # Public build: renders without Clerk, so the Clerk keys below are not needed.
+        NEXT_PUBLIC_PUBLIC_AUDITS_ENABLED: "true"
+        NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-}
+    # No env_file here on purpose: the internet-facing frontend must not see the DB password
+    # or the API keys that live in the root .env.
     environment:
       NODE_ENV: production
-      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}
-      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:?set CLERK_SECRET_KEY in .env}
+      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-}
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:-}
     depends_on:
       - api
     restart: unless-stopped
