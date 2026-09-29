@@ -104,9 +104,9 @@ so the other sites stay up.
 7. **A deploy restarts that app.** Plan for a short restart of the app on every deploy of it, whether
    it is a code or a docs merge:
    - board, blc-ep and blc-dr always recreate their container;
-   - ai and seo rebuild images that get a new ID each build, because of build attestations;
-   - blogs restarts whenever its images or settings change, and a new commit always changes the
-     images.
+   - ai, seo and blogs build images that get a new ID on every build, because of build
+     attestations, so every deploy of them restarts their api, worker and frontend (and blogs'
+     beat), even a redeploy of unchanged code.
    - Merging to ai's repository restarts its api, worker and frontend (a short API outage, roughly
      10-30 s), and an ai audit running at that moment is re-run later. ai's build context also
      includes its docs, so even a docs-only merge there rebuilds and restarts it.
@@ -166,10 +166,12 @@ so the other sites stay up.
 - **Branches:** pull requests merge only as merge commits (squash and rebase merging are off in all
   six repositories). None of the six has branch protection (GitHub reports `protected=false` for
   `main`), so nothing technically stops a direct push. What happens after one differs:
-  - board, blc-ep and blc-dr: a direct push never deploys (their release gate needs a merge commit)
-    and is flagged as an issue;
-  - blogs and seo: deploys are manual;
-  - **ai (`blc-social-audit`) deploys every push to `main`, including a direct one.**
+  - board, blc-ep and blc-dr: a direct push of an ordinary commit never deploys (their release
+    gate needs a merge commit) and opens an issue, but a merge commit pushed straight to `main`
+    still deploys and is not flagged;
+  - blogs and seo: deploys are manual, from `main` only;
+  - **ai (`blc-social-audit`) deploys every push to `main`, including a direct one.** Its
+    `protect-main.yml` only turns red afterwards.
   - Always land changes through a pull request and a merge commit.
 - **App settings live only on the box**, never in git (chmod 600):
   - `~/blc-chat/blc-board/.env` (also the stack's `POSTGRES_PASSWORD` and `EVENTS_DOMAIN`);
