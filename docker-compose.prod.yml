@@ -1,22 +1,29 @@
-# Production stack for the Rick edition (blc-rick-seo-agent). NOT DEPLOYED YET.
+# Production stack for the Rick edition (blc-rick-seo-agent) on the shared BLC Linode, served at
+# https://seo.builderleadconverter.com. deploy/deploy.sh runs it; by hand it is
 #
-# `blc-rick-seo-agent.invalid` below is a placeholder on the reserved `.invalid`
-# TLD (it can never resolve); replace it with this edition's own subdomain once
-# provisioned. It must never be the parent's ai.builderleadconverter.com.
+#   docker compose -p blc-rick-seo-agent -f docker-compose.prod.yml <command>
 #
-#   docker compose -f docker-compose.prod.yml build
-#   docker compose -f docker-compose.prod.yml up -d
+# The box also runs the live ai (blc-social-audit), events, reactivation and board apps, so this
+# stack follows the box's rules (DEPLOYMENT.md §2):
+#   * No Caddy of its own and no public port. blc-social-audit's Caddy owns 80/443, terminates
+#     TLS, and proxies seo.builderleadconverter.com to `blc-rick-edge:80` over the external
+#     `blc-edge` network.
+#   * Exactly ONE container joins blc-edge: `rick-edge` (nginx, deploy/edge/rick-edge.conf).
+#     Docker registers every service name as a hostname on each network the service joins, and
+#     the parent's Caddy looks up its own `api` and `frontend` on blc-edge first. A service here
+#     named `api` or `frontend` on blc-edge would take over ai.builderleadconverter.com. So api,
+#     frontend, worker, postgres and redis stay on this stack's own network, and rick-edge
+#     reaches the api and the frontend through the unique aliases blc-rick-api and
+#     blc-rick-frontend.
+#   * Memory and CPU ceilings, plus a raised OOM score, so one heavy audit can never starve the
+#     live apps on the ~4 GB box. If memory runs out, the kernel kills a container of this stack
+#     first. Every ceiling can be tuned from .env (DEPLOYMENT.md §7).
+#   * The worker runs --concurrency=1 (one Chromium at a time).
+#   * Secrets come from .env (gitignored); never commit it.
 #
-# Differences from the dev docker-compose.yml:
-#   * no repo bind-mounts / no --reload (code is baked into the images)
-#   * adds the Next.js frontend + a Caddy reverse proxy (auto-TLS)
-#   * only Caddy exposes ports (80/443); Postgres/Redis/API stay on the internal network
-#   * worker runs at --concurrency=1 (one Chromium at a time) for the 4 GB box
-#   * secrets come from .env (gitignored); never commit it
-
-# Explicit project name, so this stack's containers and volumes (postgres_data,
-# storage, ...) can never resolve to the parent's `blc-social-audit` project,
-# whose name comes from its checkout directory.
+# Explicit project name, so this stack's containers and volumes (postgres_data, storage, ...)
+# can never resolve to the parent's `blc-social-audit` project, whose name comes from its
+# checkout directory. deploy.sh also passes it with -p, which outranks COMPOSE_PROJECT_NAME.
 name: blc-rick-seo-agent
 
 services:
@@ -33,6 +40,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    mem_limit: ${RICK_POSTGRES_MEM_LIMIT:-256m}
+    oom_score_adj: 300
     restart: unless-stopped
 
   redis:
@@ -42,6 +51,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    mem_limit: ${RICK_REDIS_MEM_LIMIT:-128m}
+    oom_score_adj: 300
     restart: unless-stopped
 
   api:
@@ -65,7 +76,8 @@ services:
       PUBLIC_AUDITS_ENABLED: "true"
       SEARCH_CONSOLE_ENABLED: "false"
       # Same-origin in prod (UI + /api on one domain), but keep CORS correct anyway.
-      API_CORS_ORIGINS: https://blc-rick-seo-agent.invalid
+      # RICK_DOMAIN exists only so a local rehearsal can use another hostname.
+      API_CORS_ORIGINS: https://${RICK_DOMAIN:-seo.builderleadconverter.com}
       # Optional here: visitors never sign in, and with PUBLIC_AUDITS_ENABLED + APP_ENV=production
       # an empty CLERK_ISSUER makes the operator endpoints answer 403 (apps/api/auth.py).
       CLERK_ISSUER: ${CLERK_ISSUER:-}
@@ -77,6 +89,19 @@ services:
       redis:
         condition: service_healthy
     command: sh -c "alembic upgrade head && uvicorn apps.api.main:app --host 0.0.0.0 --port 8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      start_period: 60s
+      retries: 6
+    networks:
+      default:
+        aliases:
+          - blc-rick-api
+    mem_limit: ${RICK_API_MEM_LIMIT:-768m}
+    cpus: ${RICK_API_CPUS:-1.0}
+    oom_score_adj: 500
     restart: unless-stopped
 
   worker:
@@ -108,12 +133,17 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    # One-time Semrush connect (make semrush-connect COMPOSE="docker compose -f docker-compose.prod.yml")
-    # streams a browser over VNC on this port, bound to the SERVER's localhost only and reached via an
-    # SSH tunnel (ssh -L 5900:localhost:5900 ...) — never exposed publicly.
+    # One-time Semrush connect (docs/OPERATIONS.md §5) streams a browser over VNC, bound to the
+    # SERVER's localhost only and reached through an SSH tunnel. Host port 5901, because the
+    # parent's worker already holds 127.0.0.1:5900 on this box.
     ports:
-      - "127.0.0.1:5900:5900"
+      - "127.0.0.1:5901:5900"
     command: celery -A apps.worker.celery_app.celery_app worker --loglevel=info --concurrency=1
+    # Chromium is the heaviest process of this stack, so it is also the kernel's first choice
+    # if the box ever runs out of memory.
+    mem_limit: ${RICK_WORKER_MEM_LIMIT:-1536m}
+    cpus: ${RICK_WORKER_CPUS:-1.0}
+    oom_score_adj: 800
     restart: unless-stopped
 
   frontend:
@@ -121,7 +151,7 @@ services:
       context: ./apps/frontend
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_API_BASE_URL: https://blc-rick-seo-agent.invalid/api
+        NEXT_PUBLIC_API_BASE_URL: https://${RICK_DOMAIN:-seo.builderleadconverter.com}/api
         NEXT_PUBLIC_APP_NAME: "BLC Website Audit"
         # Public build: renders without Clerk, so the Clerk keys below are not needed.
         NEXT_PUBLIC_PUBLIC_AUDITS_ENABLED: "true"
@@ -134,24 +164,58 @@ services:
       CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:-}
     depends_on:
       - api
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 6
+    networks:
+      default:
+        aliases:
+          - blc-rick-frontend
+    mem_limit: ${RICK_FRONTEND_MEM_LIMIT:-384m}
+    oom_score_adj: 500
     restart: unless-stopped
 
-  caddy:
-    image: caddy:2-alpine
-    ports:
-      - "80:80"
-      - "443:443"
+  # The stack's only door: the one container on blc-edge. It strips /api like the parent's
+  # `handle_path /api/*`, forwards the visitor's address and scheme, and rate-limits the
+  # requests that start audits (deploy/edge/rick-edge.conf).
+  rick-edge:
+    image: nginx:1.30.5-alpine@sha256:0985e772fb9f729e6fa0980da05fca5d9c468e870eed43071545afa9d2e27d94
+    # The directory, not the file, is mounted, so a deploy's new config is visible without
+    # recreating the container. deploy.sh tests it and reloads nginx gracefully.
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
+      - ./deploy/edge:/etc/nginx/conf.d:ro
     depends_on:
-      - frontend
       - api
+      - frontend
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/edge-health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      default: {}
+      blc_edge:
+        aliases:
+          - blc-rick-edge
+    mem_limit: ${RICK_EDGE_MEM_LIMIT:-64m}
+    oom_score_adj: 500
     restart: unless-stopped
+
+networks:
+  # Created by this project (blc-rick-seo-agent_default). Not internal: the api and the worker
+  # reach the audited sites and the APIs through it.
+  default: {}
+  # The box's shared proxy network, created once by blc-social-audit's deploy (or deploy.sh
+  # here, if it is missing). Only rick-edge joins it.
+  blc_edge:
+    external: true
+    name: blc-edge
 
 volumes:
   postgres_data:
   storage:
-  caddy_data:
-  caddy_config:

@@ -1,20 +1,20 @@
 # Operations
 
 Day-2 runbook for the Rick edition: changing settings, the cron jobs, the Semrush session behind AI
-Visibility, and troubleshooting. **This edition is not deployed yet** —
-[DEPLOYMENT.md](../DEPLOYMENT.md) has the go-live plan and the locks to lift. Local commands work
-today; server commands assume the checkout at `~/blc-rick-seo-agent` and the compose project
-`blc-rick-seo-agent` on the parent's box. The parent's live stack has its own runbook in
+Visibility, and troubleshooting. The edition deploys to **https://seo.builderleadconverter.com**
+on the parent's shared box; [DEPLOYMENT.md](../DEPLOYMENT.md) has the go-live steps and the box's
+rules. Server commands assume the checkout at `~/blc-rick-seo-agent` and the compose project
+`blc-rick-seo-agent`. The parent's live stack has its own runbook in
 `blcdevelopment/blc-social-audit`.
 
 ---
 
-## 1. What will run
+## 1. What runs
 
 | Piece | Value |
 |---|---|
-| Host | The parent's Linode VM (shared), once capacity is confirmed |
-| Domain | To be decided; routed by the parent's Caddy over the `blc-edge` network ([DEPLOYMENT.md](../DEPLOYMENT.md) §2) |
+| Host | The parent's Linode VM (shared with ai, events, reactivation, board and blogs) |
+| Domain | `seo.builderleadconverter.com`; the parent's Caddy routes it to `blc-rick-edge:80` over the `blc-edge` network ([DEPLOYMENT.md](../DEPLOYMENT.md) §2) |
 | Orchestration | `docker-compose.prod.yml`, project `blc-rick-seo-agent` |
 | Repo on the box | `~/blc-rick-seo-agent` |
 | `.env` | `~/blc-rick-seo-agent/.env` (gitignored, box-only, `chmod 600`) |
@@ -26,10 +26,13 @@ today; server commands assume the checkout at `~/blc-rick-seo-agent` and the com
 | `api` | FastAPI :8000 | runs `alembic upgrade head` on boot |
 | `worker` | Celery + Playwright/Chromium | `--concurrency=1`: one audit at a time |
 | `frontend` | Next.js :3000 | the public build, no sign-in |
+| `rick-edge` | nginx :80 | the stack's only container on `blc-edge`: strips `/api`, rate-limits audit starts |
 
-The compose file still contains a `caddy` service and the worker's `127.0.0.1:5900` VNC mapping;
-both collide with the parent on a shared box and are removed at go-live
-([DEPLOYMENT.md](../DEPLOYMENT.md) §4).
+Nothing but `rick-edge` may join `blc-edge`, and no service may be named like one of the
+parent's (`api`, `frontend`, ...) there. A service name becomes a hostname on that network and
+would capture the parent's routes ([DEPLOYMENT.md](../DEPLOYMENT.md) §2). Each container has a
+memory ceiling, set by the `RICK_*_MEM_LIMIT` values in `.env` ([DEPLOYMENT.md](../DEPLOYMENT.md)
+§7). The worker's VNC port is `127.0.0.1:5901`, because the parent holds 5900.
 
 ## 2. How settings reach each container
 
@@ -55,7 +58,7 @@ This decides whether a change needs a **rebuild** or just a **recreate**.
 | `BOOKING_URL` / `BOOKING_CTA_LABEL` in `.env` | `up -d --force-recreate api worker` | No |
 | `REPORT_PROFILE` / `PUBLIC_AUDITS_ENABLED` / `SEARCH_CONSOLE_ENABLED` | edit them in `docker-compose.prod.yml` (a code change), then recreate **both** api and worker | No |
 | `NEXT_PUBLIC_*` | `up -d --build frontend` | Yes (frontend) |
-| Application code | deploys are disabled until go-live ([DEPLOYMENT.md](../DEPLOYMENT.md)) | — |
+| Application code | merge the PR, then **Actions → Deploy → Run workflow** ([DEPLOYMENT.md](../DEPLOYMENT.md) §5) | Yes |
 
 A PDF or DOCX is rendered once, when its audit completes: a changed call-to-action or profile shows
 up in new reports and on the web page immediately, but existing files keep the old one.
@@ -78,10 +81,15 @@ only the connection string; rotating it is a separate `ALTER ROLE`.
 
 ## 3. Deploying
 
-Disabled — see [DEPLOYMENT.md](../DEPLOYMENT.md) §1 for the locks and §4 for the checklist. Once
-enabled, the script builds the images one at a time and rolls the stack forward: a failed build
-leaves the previous containers serving, but a failed health gate leaves the new ones up, so roll
-back with `bash deploy/deploy.sh <previous-sha>`.
+Merge the pull request, then **Actions → Deploy → Run workflow** on `main`. On the box by hand:
+`cd ~/blc-rick-seo-agent && git fetch origin && bash deploy/deploy.sh "$(git rev-parse origin/main)"`.
+- The script builds the images one at a time and backs the database up before migrations.
+- A failed build leaves the running containers untouched.
+- A failed health check puts the previous images back by itself.
+- To undo a release that deployed fine but misbehaves, revert its pull request and deploy
+  `main` again; the script only fast-forwards.
+
+Its full sequence is in [DEPLOYMENT.md](../DEPLOYMENT.md) §6.
 
 ## 4. Cron jobs (host crontab)
 
@@ -132,8 +140,9 @@ python scripts/check_semrush_ai_visibility.py --login
 
 On the server the session must come from the server's IP:
 `make semrush-connect COMPOSE="docker compose -p blc-rick-seo-agent -f docker-compose.prod.yml"`,
-then `ssh -L <port>:localhost:<port> <user>@<box>` and a VNC viewer (the VNC host port changes at
-go-live, see [DEPLOYMENT.md](../DEPLOYMENT.md) §4). The session lands in
+then `ssh -L 5901:localhost:5901 abdullah@173.255.206.170` and a VNC viewer on `localhost:5901`
+(host port 5901; the parent's worker holds 5900). Only with a second Semrush seat: this login
+signs the parent's bot out of the same account. The session lands in
 `SEMRUSH_SESSION_STATE_PATH` on the storage volume.
 
 ### Settings
@@ -162,9 +171,11 @@ suspend the account — a business-risk decision the operator owns. Keep volume 
 - **Logs:** `docker compose -p blc-rick-seo-agent -f docker-compose.prod.yml logs -f api worker`. A
   render error like `'dict object' has no attribute …` usually means a **stale worker** — Celery
   doesn't hot-reload, so `up -d --force-recreate worker`.
-- **Disk:** `df -h`, `docker system df`; reclaim with `docker image prune -f`.
-- **Proxy:** this edition owns no proxy; the parent's Caddy routes its hostname. Never start a
-  second proxy on 80/443.
+- **Disk:** `df -h`, `docker system df`. Reclaim with `docker image prune -f`, and old build cache
+  with `docker builder prune -f --filter until=720h`.
+- **Proxy:** the parent's Caddy terminates TLS and routes the hostname to `rick-edge`. Never start
+  a second proxy on 80/443. Edge config changes ship with a deploy (tested with `nginx -t`, then
+  reloaded).
 - 🔴 **Never `docker compose down -v`** — `-v` wipes `postgres_data` and `storage`. Plain `down` is
   safe.
 

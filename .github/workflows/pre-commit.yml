@@ -3,6 +3,8 @@ name: Pre-commit
 on:
   pull_request:
   workflow_dispatch:
+  # deploy.yml runs these same checks on the exact commit before it deploys.
+  workflow_call:
 
 permissions:
   contents: read
@@ -43,4 +45,8 @@ jobs:
         run: npm ci
 
       - name: Run pre-commit
+        env:
+          # no-commit-to-branch guards local commits; on main (a deploy) it would refuse the
+          # very commit being deployed.
+          SKIP: ${{ github.ref == 'refs/heads/main' && 'no-commit-to-branch' || '' }}
         run: pre-commit run --all-files --show-diff-on-failure

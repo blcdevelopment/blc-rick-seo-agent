@@ -102,9 +102,10 @@ and **polish** (the PDF is presentable to a prospect, not a dev artifact).
   features — share links, per-client white-label branding, external-SEO re-run, AI-visibility
   refresh, audit history — remain API endpoints for Clerk-authenticated or local use and are hidden
   in the public build.
-- **Ops (not deployed yet):** production compose for the parent's Linode box, deploy workflow and
-  script disabled until go-live ([DEPLOYMENT.md](../DEPLOYMENT.md)), optional Sentry, gated
-  `/metrics`, cron storage retention and backups.
+- **Ops:** production compose for the parent's shared Linode box at seo.builderleadconverter.com,
+  behind an nginx edge proxy with audit-start rate limits; a manual deploy workflow and script
+  ([DEPLOYMENT.md](../DEPLOYMENT.md)); optional Sentry, gated `/metrics`, cron storage retention and
+  backups.
 - **Off by default but built:** competitor-benchmarking seam (no vendor client), advisory axe-core
   accessibility pass, connected-mode YouTube Analytics.
 
