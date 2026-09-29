@@ -1,8 +1,7 @@
 # Developer setup
 
-Local development on macOS/Linux. This edition is **not deployed yet**: the deployment plan and
-its open items are in [DEPLOYMENT.md](../DEPLOYMENT.md), and day-2 operations are in
-[OPERATIONS.md](OPERATIONS.md).
+Local development on macOS/Linux. Deploying to https://seo.builderleadconverter.com is in
+[DEPLOYMENT.md](../DEPLOYMENT.md), and day-2 operations are in [OPERATIONS.md](OPERATIONS.md).
 
 ---
 

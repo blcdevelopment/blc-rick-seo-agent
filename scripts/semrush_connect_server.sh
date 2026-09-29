@@ -13,8 +13,9 @@
 #   # (locally you can just: make semrush-connect)
 #
 # Then, from your LAPTOP, tunnel the VNC port and open a VNC client:
-#   ssh -L 5900:localhost:5900 <user>@<your-server>
-#   # point any VNC viewer at localhost:5900, log into Semrush, reach your dashboard,
+#   ssh -L 5901:localhost:5901 <user>@<your-server>
+#   # (the Rick edition's worker publishes VNC on the box's 127.0.0.1:5901; the parent holds 5900)
+#   # point any VNC viewer at localhost:5901, log into Semrush, reach your dashboard,
 #   # then come back to this terminal and press Enter.
 #
 # The session is saved to the mounted storage volume; every audit afterward reuses it. Re-run this

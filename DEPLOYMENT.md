@@ -1,100 +1,324 @@
 # Deployment — Rick edition
 
-**Status (2026-09-28): not deployed.** This document is the go-live plan. The server steps it
-builds on (Docker install, swap, deploy key, firewall) are the parent's, documented in
-`blcdevelopment/blc-social-audit` → `DEPLOYMENT.md`. Day-2 operations are in
-[docs/OPERATIONS.md](docs/OPERATIONS.md).
+**Status (2026-09-29): ready to deploy, not live yet.** Target:
+**https://seo.builderleadconverter.com**, on the shared BLC Linode, next to the live apps. §5 is
+the go-live order, step by step. Day-2 operations are in [docs/OPERATIONS.md](docs/OPERATIONS.md).
+
+Everything here was rehearsed end to end on 29 September (§9). The rehearsal used a local copy of
+the box's layout, the real images and this `deploy/deploy.sh`, fed through `bash -s` exactly as
+the workflow does.
 
 ---
 
-## 1. What stops this repo from deploying today
-
-Every lock is deliberate; lift them only as part of §4.
-
-| Lock | Where |
-|---|---|
-| The deploy workflow has no `push` trigger, its job is `if: ${{ false }}`, and it reads `RICK_DEPLOY_*` secrets (never the parent's `DEPLOY_*`) | `.github/workflows/deploy.yml` |
-| The deploy script exits before doing anything | `deploy/deploy.sh` |
-| The domain is the placeholder `blc-rick-seo-agent.invalid` (a reserved TLD that can never resolve) | `docker-compose.prod.yml` (CORS, `NEXT_PUBLIC_API_BASE_URL`), `Caddyfile` |
-| Compose project `blc-rick-seo-agent`, so containers and volumes can never resolve to the parent's `blc-social-audit` project | both compose files |
-
-## 2. Target setup
-
-This edition shares the parent's Linode box and front door but nothing else:
+## 1. What runs where
 
 ```text
-Internet ─► the parent's Caddy (owns 80/443, auto-TLS)
-              ├─ ai.builderleadconverter.com  ─► parent stack (unchanged)
-              ├─ events / reactivation / board ─► sibling apps (unchanged)
-              └─ <rick domain>  ─(blc-edge network)─► blc-rick-seo-agent stack
-                     /api/*  ─► api      (unique alias, e.g. blc-rick-api:8000)
-                     /*      ─► frontend (unique alias, e.g. blc-rick-frontend:3000)
-
-blc-rick-seo-agent stack (compose project blc-rick-seo-agent):
-  postgres + redis (own volumes) · api · worker · frontend — no host ports, no own Caddy
+Internet ──► 173.255.206.170 :80/:443
+               │
+               ▼
+      blc-social-audit's Caddy (the box's ONLY web server; owns 80/443; Let's Encrypt)
+               │  by hostname, over the shared Docker network `blc-edge`
+               ├─ ai.builderleadconverter.com            ─► social-audit api / frontend
+               ├─ events / reactivation / board          ─► blc-ep-app / blc-dr-app / blc-board-app
+               ├─ blogs.builderleadconverter.com         ─► blc-blogs-edge
+               └─ seo.builderleadconverter.com           ─► blc-rick-edge:80
+                                                              │
+   compose project blc-rick-seo-agent                         ▼
+   ┌────────────────────────────────────────────────────────────────────────────┐
+   │ rick-edge (nginx)  ── the ONLY container of this stack on blc-edge          │
+   │   /api/*  ─► blc-rick-api:8000      (prefix stripped, rate-limited writes)   │
+   │   /*      ─► blc-rick-frontend:3000                                          │
+   │                                                                              │
+   │ api (FastAPI) · worker (Celery + Chromium) · frontend (Next.js)              │
+   │ postgres · redis          all on this project's own network, no host ports  │
+   └────────────────────────────────────────────────────────────────────────────┘
 ```
 
-`docker-compose.prod.yml` already pins this edition's switches on **both** api and worker
-(`REPORT_PROFILE=teaser`, `PUBLIC_AUDITS_ENABLED=true`, `SEARCH_CONSOLE_ENABLED=false`), builds the
-public UI (`NEXT_PUBLIC_PUBLIC_AUDITS_ENABLED=true`, no Clerk keys needed), and keeps Clerk optional:
-without `CLERK_ISSUER` the operator endpoints answer 403 on a deployment.
+| Container | Image | Ceiling (default) | Notes |
+|---|---|---|---|
+| `rick-edge` | nginx 1.30.5-alpine (pinned digest) | 64 MB | [deploy/edge/rick-edge.conf](deploy/edge/rick-edge.conf) |
+| `api` | built on the box | 768 MB, 1 CPU | runs `alembic upgrade head` on start |
+| `worker` | built on the box | 1536 MB, 1 CPU | one audit at a time; Semrush VNC on `127.0.0.1:5901` |
+| `frontend` | built on the box | 384 MB | public build, no Clerk |
+| `postgres` | postgres:16-alpine | 256 MB | database `blc_rick_seo_agent`, volume `blc-rick-seo-agent_postgres_data` |
+| `redis` | redis:7-alpine | 128 MB | Celery broker |
 
-## 3. Decisions and blockers before go-live
+## 2. The shared box's rules, and why this stack is shaped the way it is
+
+The box is a ~4 GB, 2-CPU Linode that already serves the live **ai**, **events**,
+**reactivation** and **board** apps. Nothing this stack does may disturb them.
+
+1. **One web server.** `blc-social-audit`'s Caddy owns ports 80/443 and terminates TLS for every
+   hostname. This stack has no Caddy of its own and publishes no public port. Its route is a
+   block in `blc-social-audit`'s Caddyfile, and that repository's deploy validates the file,
+   then reloads Caddy gracefully.
+2. **Exactly one container on `blc-edge`, under names nobody else uses.** Docker registers each
+   Compose *service name* as a hostname on every network the service joins, next to its
+   explicit aliases. The parent's Caddy sits on `blc-edge` and on its own network, and it looks
+   names up on `blc-edge` first. So a service of ours called `api` or `frontend` on `blc-edge`
+   would take over `ai.builderleadconverter.com`'s own `reverse_proxy api:8000` /
+   `frontend:3000`. This was reproduced on 29 September, and the live box shows those
+   service-name aliases (`board`, `blc-ep`, `blc-dr`) on `blc-edge`.
+   - Only `rick-edge` (alias `blc-rick-edge`) joins it.
+   - Everything else stays on the project's own network and is reached as `blc-rick-api` /
+     `blc-rick-frontend`.
+   - No `postgres` of ours may ever sit on `blc-edge` either: the Board stack's apps resolve
+     their `postgres` there too.
+   - `deploy.sh` enforces all of this before every deploy (§6).
+3. **Ceilings, not hopes.** Each container has a memory ceiling, and the api and worker a CPU
+   ceiling. Each also has a raised OOM score (worker 800, others 300-500; the live apps are 0).
+   If the box ever runs out of memory, the kernel kills one of ours first, never a live app. A
+   container that hits its own ceiling is killed and restarted by Docker, alone.
+4. **One build at a time.** Every app's deploy takes `/tmp/blc-production-deploy.lock`, so two
+   `docker build`s never compete for the box's memory. `deploy.sh` also refuses to start with
+   less than 1200 MB of memory available or less than 8 GB of disk free.
+5. **Nothing else is touched.** `deploy.sh` builds, starts and reloads only compose project
+   `blc-rick-seo-agent`. It never restarts the parent's Caddy or another app.
+
+## 3. Decisions and open items
 
 | Item | Status |
 |---|---|
-| Domain (and its DNS A record pointing at the box) | **Open** |
-| `BOOKING_URL` for the call-to-action | **Open** (empty shows the label without a link) |
-| Abuse protection on `POST /audits`: rate limiting and/or CAPTCHA, per-audit cost limits | **Blocker** — anyone can start paid audits today ([LIMITATIONS.md](docs/LIMITATIONS.md) §2) |
-| Box capacity: another Postgres + worker with Chromium next to the parent and the sibling apps on a ~4 GB box | **Check** memory and swap first; resize if needed |
-| API keys: this edition currently reuses the parent's (shared quota and billing) | **Decide**: keep sharing or issue its own |
-| Semrush for AI Visibility: one live session per account, so a fresh login here signs out the parent's bot | **Decide**: a second Semrush seat (clean) or leave AI Visibility without data (the teaser omits the section) |
-| Operator access: Clerk for the history/metrics endpoints | Optional; without it they stay closed (403) |
+| Domain | **Decided: `seo.builderleadconverter.com`.** The DNS record is still to be created (§5 step 1) |
+| `BOOKING_URL` for the call-to-action | **Open.** Set in `.env`; empty shows the label without a link |
+| Abuse protection on `POST /audits` | **Edge limits in place:** per visitor, a burst of 3 audit starts, then 1 a minute; for everyone together, 20, then 10 a minute; over that, 429. Polling and reports are never limited. There is still no CAPTCHA or daily quota ([LIMITATIONS.md](docs/LIMITATIONS.md) §2) |
+| API keys | **Decide:** this edition's own keys, or the parent's (shared quota and billing) |
+| Semrush AI Visibility | **Off** (`AI_VISIBILITY_ENABLED=false`). Semrush allows one live session per account, and a login here signs the parent's bot out; it needs a second seat |
+| Box capacity | Measured 29 Sep: 2.7 GB available of 3.9 GB, 20 GB disk free, plus 43 GB of old build cache. This stack idles near 340 MB (measured in the rehearsal). Enough for now; **8 GB is the comfortable size** once blogs and this edition both run (§7) |
+| Operator access (Clerk) | Optional. Without `CLERK_ISSUER` the operator endpoints answer 403 |
+| Public repository | This repo is public (the parent is private). Its code is readable by anyone; secrets never are |
 
-## 4. Go-live checklist
+## 4. What is in this repository
 
-**In this repo (one PR):**
+| File | Role |
+|---|---|
+| [docker-compose.prod.yml](docker-compose.prod.yml) | The stack for the shared box: the edge proxy, aliases, ceilings, the worker's VNC port 5901 |
+| [deploy/edge/rick-edge.conf](deploy/edge/rick-edge.conf) | The edge proxy: `/api` prefix strip, visitor address and https passed on, write rate limits, `/edge-health` |
+| [deploy/deploy.sh](deploy/deploy.sh) | The deploy, run on the box (§6) |
+| [deploy/production.env.example](deploy/production.env.example) | The box's `.env`, with every value it needs |
+| [.github/workflows/deploy.yml](.github/workflows/deploy.yml) | Manual **Deploy** workflow: main only, runs the pre-commit checks on the exact commit, then SSHes in |
+| `blc-social-audit` → `Caddyfile` | The `seo.builderleadconverter.com` block (in that repository) |
 
-1. Replace `blc-rick-seo-agent.invalid` with the real domain in `docker-compose.prod.yml`
-   (`API_CORS_ORIGINS`, `NEXT_PUBLIC_API_BASE_URL`).
-2. In `docker-compose.prod.yml`: remove the `caddy` service and its volumes (only one stack may own
-   80/443 on the box), remove the worker's `127.0.0.1:5900` mapping (the parent's worker uses it —
-   pick another host port for `semrush-connect` if needed), and attach `api` and `frontend` to the
-   external `blc-edge` network with unique aliases (`blc-rick-api`, `blc-rick-frontend`).
-3. Delete `Caddyfile` (the routing lives in the parent's Caddy, step 6).
-4. `deploy/deploy.sh`: remove the `exit 1` guard; run compose with an explicit
-   `-p blc-rick-seo-agent` (a `-p` flag or `COMPOSE_PROJECT_NAME` outranks the file's `name:`); drop
-   the Caddy network/validate/reload steps; keep the default checkout `~/blc-rick-seo-agent`.
-5. `.github/workflows/deploy.yml`: restore the `push: main` trigger and remove `if: ${{ false }}`;
-   add the `RICK_DEPLOY_HOST/USER/SSH_KEY/KNOWN_HOSTS` repository secrets.
+## 5. Go-live, step by step
 
-**In the parent repo (its own PR — a production change):**
+Do these in order. Steps 2-5 change nothing that is live; only step 6 touches a live app
+(the parent's Caddy), and it does so with a validated, graceful reload.
 
-6. Add the Rick site block to `blc-social-audit`'s `Caddyfile`; its deploy validates and gracefully
-   reloads Caddy:
+### Step 1 — DNS (Shayan)
 
-   ```caddyfile
-   <rick domain> {
-   	encode zstd gzip
-   	handle_path /api/* {
-   		reverse_proxy blc-rick-api:8000
-   	}
-   	handle {
-   		reverse_proxy blc-rick-frontend:3000
-   	}
-   }
-   ```
+Ask for one Cloudflare record, **DNS only (grey cloud)**, because Caddy issues its own
+certificate:
 
-**On the box:**
+```text
+seo.builderleadconverter.com   A   173.255.206.170   DNS only
+```
 
-7. Clone to `~/blc-rick-seo-agent` with a read-only deploy key; create `~/blc-rick-seo-agent/.env`
-   (`chmod 600`) from `.env.template` with production values (`POSTGRES_PASSWORD`, API keys,
-   `BOOKING_URL`).
-8. Build one image at a time (`next build` is the OOM risk), then start:
-   `docker compose -p blc-rick-seo-agent -f docker-compose.prod.yml up -d`. `alembic upgrade head`
-   runs on api start.
-9. Install the cron jobs ([OPERATIONS.md](docs/OPERATIONS.md) §4) and, if AI Visibility is used,
-   the Semrush session (§5).
-10. Verify: the domain serves the submit page with no sign-in; an audit of a real site completes;
-    the report shows problems and the call-to-action but no fixes; `GET /api/audits` answers 403;
-    the parent at ai.builderleadconverter.com is unaffected.
+Check it before step 6: `dig +short seo.builderleadconverter.com` prints `173.255.206.170`.
+
+### Step 2 — Clone on the box
+
+SSH in as `abdullah`. The sibling apps fetch with the `blc_apps_github` key, and this uses the same:
+
+```bash
+cd ~
+git clone -c core.sshCommand="ssh -i ~/.ssh/blc_apps_github -o IdentitiesOnly=yes" \
+  git@github.com:blcdevelopment/blc-rick-seo-agent.git
+cd ~/blc-rick-seo-agent
+git config core.sshCommand "ssh -i ~/.ssh/blc_apps_github -o IdentitiesOnly=yes"
+```
+
+### Step 3 — The `.env`
+
+```bash
+cd ~/blc-rick-seo-agent
+cp deploy/production.env.example .env && chmod 600 .env
+openssl rand -hex 24          # paste as POSTGRES_PASSWORD
+nano .env                     # POSTGRES_PASSWORD, BOOKING_URL, the API keys you chose (§3)
+```
+
+### Step 4 — Check the headroom
+
+```bash
+free -m          # "available" should be well above 1200
+df -h /          # 8 GB free at least; the worker image alone is ~2.8 GB
+docker system df
+```
+
+If disk is short, reclaim old build cache. This deletes only cache unused for 30 days; it never
+touches a running container or an image in use. The next build of an app that had cache there
+takes longer, once.
+
+```bash
+docker builder prune -f --filter until=720h
+```
+
+### Step 5 — First deploy, by hand, before the route exists
+
+```bash
+cd ~/blc-rick-seo-agent && git fetch origin
+BLC_RICK_SKIP_PUBLIC_CHECK=1 bash deploy/deploy.sh "$(git rev-parse origin/main)"
+```
+
+The first run builds three images one at a time (about 10-20 minutes on the box). It must end
+with:
+
+```text
+==> blc-rick-seo-agent <sha> is healthy inside the box; the public check was skipped
+```
+
+At this point the stack is running, but nothing public points at it yet.
+
+### Step 6 — The route (a pull request to `blc-social-audit`)
+
+The `seo.builderleadconverter.com` block is in `blc-social-audit`'s Caddyfile, in the pull request
+that goes with this change. Merge it **after steps 1 and 5**, at a quiet moment:
+- Its deploy validates the Caddyfile, then gracefully reloads Caddy. The certificate for `seo`
+  arrives within about a minute, provided the DNS record resolves.
+- That merge also rebuilds the ai app's api and worker, once, because it changes that
+  repository's build context. The ai api is unavailable for roughly 10-20 seconds, and an audit
+  running on the ai site at that moment is interrupted. Every later routing-only change rebuilds
+  nothing: the same pull request moves `Caddyfile` and `deploy/` out of the build context.
+- events, reactivation and board are not restarted.
+
+### Step 7 — Verify
+
+```bash
+curl -fsS https://seo.builderleadconverter.com/api/health     # {"status":"ok",...,"environment":"production"}
+curl -s -o /dev/null -w '%{http_code}\n' https://seo.builderleadconverter.com/api/audits   # 403: operator endpoint
+for h in ai events reactivation board; do
+  curl -s -o /dev/null -w "$h %{http_code}\n" https://$h.builderleadconverter.com/; done
+```
+
+Then, in a browser:
+1. The site loads without a sign-in.
+2. An audit of a real site completes (about 8-10 minutes).
+3. The report shows the problems and the "Book a meeting with Rick" call-to-action, and no fixes.
+
+### Step 8 — Hand deploys over to GitHub Actions
+
+A repository **admin** adds these secrets under Settings → Secrets and variables → Actions:
+
+| Secret | Value |
+|---|---|
+| `RICK_DEPLOY_HOST` | `173.255.206.170` |
+| `RICK_DEPLOY_USER` | `abdullah` |
+| `RICK_DEPLOY_SSH_KEY` | the private half of the GitHub Actions → Linode key the siblings use |
+| `RICK_DEPLOY_KNOWN_HOSTS` | the pinned `ssh-keyscan 173.255.206.170` line the siblings use |
+| `RICK_DEPLOY_PORT` | `22` (optional) |
+
+From then on, merge a PR and run **Actions → Deploy → Run workflow** on `main`. After one healthy
+run, adding `push: branches: [main]` under `on:` in
+[deploy.yml](.github/workflows/deploy.yml) makes it automatic.
+
+### Step 9 — Cron jobs
+
+Install the backup, storage-cleanup and alert jobs in [docs/OPERATIONS.md](docs/OPERATIONS.md) §4.
+`deploy.sh` backs the database up before each deploy's migrations, but only a nightly backup
+covers the days in between.
+
+## 6. What `deploy/deploy.sh` does, in order
+
+1. Takes the box's shared deploy lock, waiting up to 30 minutes.
+2. Refuses these, and **changes nothing**:
+   - a missing repo, `.env` or `python3`;
+   - local edits to tracked files.
+3. Fast-forwards `main` to the exact commit.
+4. Validates the Compose file, then checks the plan. **It refuses and changes nothing** if:
+   - anything but `rick-edge` would join `blc-edge`, or `rick-edge` would carry other names there;
+   - any port would be published beyond `127.0.0.1`;
+   - a `caddy` service is present;
+   - another app's container already answers to `rick-edge`, `blc-rick-edge` or
+     `blc-rick-seo-agent-rick-edge-1` on `blc-edge`.
+5. Tests the edge proxy config with `nginx -t` in a throwaway container.
+6. Checks the headroom: at least 1200 MB of memory available (`BLC_RICK_MIN_AVAILABLE_MB`), at
+   least 8 GB of disk free (`BLC_RICK_MIN_FREE_GB`), and the VNC port 5901 free.
+7. Tags the running images `:rollback`.
+8. Dumps the database to `~/backups/blc-rick-seo-agent/` before migrations can change it.
+9. Builds `api`, `worker` and `frontend`, one at a time. If a build fails, nothing running is
+   touched.
+10. Runs `up -d` for this project only. The api migrates, then starts.
+11. Tests and gracefully reloads the edge config.
+12. Waits up to 5 minutes for api, frontend and edge to be healthy and the worker to be running.
+13. Fetches `/api/health` through the edge, inside the box, then
+    `https://seo.builderleadconverter.com/api/health` from outside.
+14. On any failure after step 9, puts the `:rollback` images back. A migration is not undone.
+    Until then the new containers are running. A release whose api cannot start leaves
+    seo.builderleadconverter.com down for up to about 5 minutes before the rollback; the other
+    apps are unaffected. On success, records the commit in `~/.blc-rick-seo-agent-deployed` and
+    drops the rollback tags.
+
+To undo a release that deployed fine but behaves badly, revert its pull request and deploy
+`main` again. The script only moves forward (fast-forward).
+
+## 7. Resources on the shared box
+
+| Setting in `.env` | Default | What it caps |
+|---|---|---|
+| `RICK_WORKER_MEM_LIMIT` / `RICK_WORKER_CPUS` | `1536m` / `1.0` | Celery + Chromium, one audit at a time |
+| `RICK_API_MEM_LIMIT` / `RICK_API_CPUS` | `768m` / `1.0` | FastAPI, including DOCX rendering |
+| `RICK_FRONTEND_MEM_LIMIT` | `384m` | Next.js server |
+| `RICK_POSTGRES_MEM_LIMIT` | `256m` | PostgreSQL 16 |
+| `RICK_REDIS_MEM_LIMIT` | `128m` | Redis |
+| `RICK_EDGE_MEM_LIMIT` | `64m` | nginx |
+
+To change one, edit `.env` and apply it:
+`docker compose -p blc-rick-seo-agent -f docker-compose.prod.yml up -d <service>`. If audits of
+large sites fail with the worker "Killed" in its logs, raise `RICK_WORKER_MEM_LIMIT`, but only
+after checking `free -m`.
+
+**When to grow the box.** Everything together is the ai app (Chromium), events, reactivation,
+board, blogs and this edition. That fits in 4 GB at idle, but two audits running at once (ai and
+seo) push into swap. Resizing the Linode to 8 GB is the comfortable fix. It is a short reboot of
+every app, so Darius schedules it.
+
+**Disk.** Build cache grows with every deploy of every app (43 GB of it on 29 September). Prune
+what is old: `docker builder prune -f --filter until=720h`.
+
+## 8. Taking it down
+
+```bash
+cd ~/blc-rick-seo-agent
+docker compose -p blc-rick-seo-agent -f docker-compose.prod.yml down      # keeps the data volumes
+```
+
+Then remove the `seo.builderleadconverter.com` block from `blc-social-audit`'s Caddyfile with a
+pull request. Never add `-v` unless the data is meant to go: it deletes the database and every
+report.
+
+## 9. Rehearsal (29 September)
+
+A local copy of the box's layout ran the real `deploy/deploy.sh` through `bash -s`, as the
+workflow does, against the real images. The copy had:
+- a throwaway `origin` and a checkout at the previous `main`;
+- a stand-in for the live ai app: containers answering as `api` and `frontend` on their own
+  network;
+- a stand-in parent Caddy on that network and on `blc-edge`, with this repo's block;
+- the blogs stack deployed next to it.
+
+1. **First deploy** (from nothing): all three images built, the checks passed, the stack came up
+   healthy, and `/api/health` answered through the stand-in public route. Exit 0.
+2. **Checks after it:**
+   - The ai stand-in's `/api` and `/` still answered from its own containers.
+   - `blc-edge` held only `rick-edge` (names `rick-edge`, `blc-rick-edge` and its container
+     name), the blogs edge and the parent.
+   - From `blc-edge`, `postgres`, `redis`, `api`, `frontend`, `worker`, `blc-rick-api` and
+     `blc-rick-frontend` were not resolvable.
+   - `GET /api/audits` answered 403, and `/api/docs` 404.
+   - Ceilings were applied as in §1 (worker OOM score 800); VNC was bound to `127.0.0.1:5901`.
+   - Idle memory was about 340 MB for the whole stack.
+3. **A real audit through the public route:**
+   - `POST /api/audits` (https://example.com) completed; the worker peaked near 440 MB of its
+     1536 MB ceiling.
+   - The PDF (64 KB) and DOCX downloaded, the report JSON carried "Book a meeting with Rick"
+     and the booking URL, and `/audit/<id>` rendered.
+4. **Rate limits (edge alone, with echo servers behind it):**
+   - One visitor's 6 quick audit starts gave 200 ×4, then 429 ×2.
+   - 30 status polls right after all gave 200.
+   - Another visitor was unaffected.
+   - A visitor's forged `X-Forwarded-For` was replaced by the parent Caddy; `https` passed
+     through to the api.
+5. **A release whose api cannot start:**
+   - The database was backed up, and the previous version kept serving through the build.
+   - The health wait failed, the api's error was printed, and the previous images were
+     restored.
+   - `/api/health` answered again, and the ai stand-in was untouched. Exit 1.

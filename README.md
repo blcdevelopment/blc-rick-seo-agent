@@ -5,9 +5,9 @@ with Instagram / Facebook / YouTube links) without signing in; the site crawls i
 scores it against versioned YAML rubrics, and renders a branded **teaser** report (web page, PDF and
 DOCX): the problems and scores, none of the fixes, and a "Book a meeting with Rick" call-to-action.
 
-**Status:** local development only, **not deployed** — the go-live plan is
-[DEPLOYMENT.md](DEPLOYMENT.md). This repo is a separate copy of `blcdevelopment/blc-social-audit`
-(the live app at https://ai.builderleadconverter.com). Nothing here may deploy to that app or share
+**Status:** ready to deploy to **https://seo.builderleadconverter.com** on the parent's shared
+box; the go-live steps are in [DEPLOYMENT.md](DEPLOYMENT.md). This repo is a separate copy of
+`blcdevelopment/blc-social-audit` (the live app at https://ai.builderleadconverter.com). Nothing here may deploy to that app or share
 its database, domain or compose project.
 
 ## Rick edition
