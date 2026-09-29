@@ -13,7 +13,7 @@ name: Deploy (DISABLED - Rick edition not provisioned)
 #      org-level secrets for the production box can never be picked up here.
 #
 # deploy/deploy.sh also refuses to run. When this edition gets its own host
-# and domain, lift all of these deliberately (see docs/OPERATIONS.md).
+# and domain, lift all of these deliberately (see DEPLOYMENT.md §4).
 #
 # Secrets it will need then (Settings -> Secrets and variables -> Actions):
 #   RICK_DEPLOY_HOST         the box IP / hostname

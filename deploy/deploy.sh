@@ -4,7 +4,7 @@
 #
 # It is streamed in over SSH by .github/workflows/deploy.yml on every merge to
 # main, and rolls the running production stack forward to that commit. It is the
-# exact, automated form of the manual day-2 command documented in DEPLOYMENT.md
+# exact, automated form of the manual day-2 command (docs/OPERATIONS.md).
 # (`git pull && docker compose -f docker-compose.prod.yml up -d --build`).
 #
 # You can also run it by hand on the box for a manual deploy / re-deploy:
@@ -24,7 +24,7 @@ set -euo pipefail
 # provisioned yet. The script was inherited from blc-social-audit, whose copy
 # rolls the LIVE production stack; this guard makes a hand-run on the shared box
 # a no-op. Remove it deliberately, in a reviewed PR, once this edition has its
-# own host, domain and compose project (see docs/OPERATIONS.md).
+# own host, domain and compose project (see DEPLOYMENT.md §4).
 echo "ERROR: deploys are disabled for blc-rick-seo-agent until it is provisioned." >&2
 exit 1
 

@@ -1,243 +1,198 @@
-# Production operations
+# Operations
 
-> **⚠️ Rick edition (`blc-rick-seo-agent`): this runbook is inherited unchanged and describes the
-> PARENT app's live stack.** This edition is not deployed. Do not run these commands for this
-> repo; its own deployment plan will replace this file once the host and domain are known.
-
-Day-2 runbook for the live stack at **https://ai.builderleadconverter.com**: how to change
-environment variables, connect Semrush, run the cron jobs and diagnose problems.
-
-[DEPLOYMENT.md](../DEPLOYMENT.md) is the deploy reference (topology, first-time setup, CI/CD
-internals). This file is the task-oriented companion. When they disagree, trust the code —
-`docker-compose.prod.yml`, `deploy/deploy.sh`, `apps/shared/config.py`.
+Day-2 runbook for the Rick edition: changing settings, the cron jobs, the Semrush session behind AI
+Visibility, and troubleshooting. **This edition is not deployed yet** —
+[DEPLOYMENT.md](../DEPLOYMENT.md) has the go-live plan and the locks to lift. Local commands work
+today; server commands assume the checkout at `~/blc-rick-seo-agent` and the compose project
+`blc-rick-seo-agent` on the parent's box. The parent's live stack has its own runbook in
+`blcdevelopment/blc-social-audit`.
 
 ---
 
-## 1. What is running
+## 1. What will run
 
 | Piece | Value |
 |---|---|
-| Host | Linode VM, Ubuntu 24.04, ~4 GB RAM + 2 GB swap |
-| Domain | `ai.builderleadconverter.com` → Caddy (automatic Let's Encrypt TLS) |
-| Firewall | Inbound SSH 22, HTTP 80, HTTPS 443, ICMP — everything else dropped |
-| Orchestration | Docker Compose, `docker-compose.prod.yml` |
-| Repo on the box | `~/blc-social-audit` |
-| Prod `.env` | `~/blc-social-audit/.env` (gitignored, box-only, `chmod 600`) |
+| Host | The parent's Linode VM (shared), once capacity is confirmed |
+| Domain | To be decided; routed by the parent's Caddy over the `blc-edge` network ([DEPLOYMENT.md](../DEPLOYMENT.md) §2) |
+| Orchestration | `docker-compose.prod.yml`, project `blc-rick-seo-agent` |
+| Repo on the box | `~/blc-rick-seo-agent` |
+| `.env` | `~/blc-rick-seo-agent/.env` (gitignored, box-only, `chmod 600`) |
 
 | Service | Role | Notes |
 |---|---|---|
-| `postgres` | database | named volume `postgres_data` |
-| `redis` | Celery broker + results | internal only |
-| `api` | FastAPI :8000 | runs `alembic upgrade head` on boot; `env_file: .env` |
-| `worker` | Celery + Playwright/Chromium | `--concurrency=1` (one browser at a time on 4 GB) |
-| `frontend` | Next.js :3000 | **no `env_file`** — only the Clerk vars, baked at build time |
-| `caddy` | reverse proxy + TLS | the only service publishing public ports (80/443) |
+| `postgres` | database | its own named volume (`blc-rick-seo-agent_postgres_data`) |
+| `redis` | Celery broker + results | internal only; never the parent's Redis |
+| `api` | FastAPI :8000 | runs `alembic upgrade head` on boot |
+| `worker` | Celery + Playwright/Chromium | `--concurrency=1`: one audit at a time |
+| `frontend` | Next.js :3000 | the public build, no sign-in |
 
-The worker also binds VNC to the host's `127.0.0.1:5900` — never public, used only by the one-time
-Semrush connect over an SSH tunnel (§5).
+The compose file still contains a `caddy` service and the worker's `127.0.0.1:5900` VNC mapping;
+both collide with the parent on a shared box and are removed at go-live
+([DEPLOYMENT.md](../DEPLOYMENT.md) §4).
 
-**Single-origin design:** the UI and API share one domain, so the Clerk `__session` cookie reaches
-`/api/*` with no extra CORS plumbing. Don't "simplify" it.
+## 2. How settings reach each container
 
-**Shared-edge design:** this Caddy is also the only public proxy for the separate Board/EP/DR
-project, reached over the external `blc-edge` network (`events` → `blc-ep-app:8000`,
-`reactivation` → `blc-dr-app:8000`, `board` → `blc-board-app:8030`). `deploy/deploy.sh` creates the
-network, connects Caddy without recreating it, validates the Caddyfile and reloads gracefully — a
-raw `docker compose up -d` skips all of that and can leave those three apps unrouted.
+This decides whether a change needs a **rebuild** or just a **recreate**.
 
-**Why the box is sized this way.** Postgres + Redis + API + worker run alongside a headless Chromium
-crawl, so 2 GB is not enough. `deploy/deploy.sh` still builds images one at a time to avoid an OOM
-during `next build`. Disk fills from images, the Chromium download and `storage/` artifacts — the
-`cleanup_storage` cron is what keeps it bounded.
+- **`api` and `worker`** load `.env` via `env_file:`, plus compose `environment:` overrides:
+  `APP_ENV=production`, the database URL, Redis, the storage dirs, and this edition's three
+  switches, **pinned on both services** so the worker (PDF, DOCX) and the api (JSON) always agree:
+  `REPORT_PROFILE=teaser`, `PUBLIC_AUDITS_ENABLED=true`, `SEARCH_CONSOLE_ENABLED=false`. The api
+  also gets `API_CORS_ORIGINS`, `AUDIT_ENQUEUE_ENABLED` and an optional `CLERK_ISSUER`.
+- **Compose `${VAR}` interpolation** is read at `up`/`build` time; only `POSTGRES_PASSWORD` has a
+  `:?` guard that aborts when empty.
+- **`frontend`** has no `env_file` (the internet-facing UI must never see the DB password or API
+  keys). Its build args — `NEXT_PUBLIC_API_BASE_URL`, `NEXT_PUBLIC_APP_NAME`,
+  `NEXT_PUBLIC_PUBLIC_AUDITS_ENABLED=true` — are **baked at build time**, so changing one requires
+  a **rebuild**.
 
-**Firewall note.** Docker writes its own iptables rules and bypasses a host `ufw` config for any
-*published* port. Only Caddy publishes ports; if you ever publish another, enforce the restriction
-at the cloud firewall, not with `ufw`.
-
-## 2. How environment variables reach each container
-
-This decides whether a change needs a **rebuild** or just a **restart**.
-
-- **`api` and `worker`** load all of `.env` via `env_file:`, plus a few compose `environment:`
-  overrides (DB URL, Redis, storage dirs; the api alone also gets `API_CORS_ORIGINS` and the
-  fail-fast `CLERK_ISSUER`). Any optional key you add to `.env` is picked up when the container is
-  recreated — **no rebuild**.
-- **Compose `${VAR}` interpolation** is read at `up`/`build` time. Four have a `:?` guard and abort
-  the deploy if empty: `POSTGRES_PASSWORD`, `CLERK_ISSUER`, `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`,
-  `CLERK_SECRET_KEY`.
-- **`frontend`** deliberately has no `env_file` (the internet-facing UI must never see the DB
-  password or the OpenAI key). Its `NEXT_PUBLIC_*` values are **baked at build time**, so changing
-  one requires a **rebuild**.
-
-### Rebuild-vs-restart cheat sheet
+### Rebuild-vs-recreate cheat sheet
 
 | Change | Command | Rebuild? |
 |---|---|---|
-| Backend key in `.env` (Apify, YouTube, OpenAI, PSI, GSC, Places, Sentry, `CLERK_ALLOWED_SUBJECTS`, `AI_VISIBILITY_*`) | `up -d --force-recreate api worker` | No |
-| `CLERK_ISSUER` / `CLERK_SECRET_KEY` / `POSTGRES_PASSWORD` | `up -d` | No |
+| Backend key in `.env` (Apify, YouTube, OpenAI, PSI, Places, Sentry, `AI_VISIBILITY_*`) | `up -d --force-recreate api worker` | No |
+| `BOOKING_URL` / `BOOKING_CTA_LABEL` in `.env` | `up -d --force-recreate api worker` | No |
+| `REPORT_PROFILE` / `PUBLIC_AUDITS_ENABLED` / `SEARCH_CONSOLE_ENABLED` | edit them in `docker-compose.prod.yml` (a code change), then recreate **both** api and worker | No |
 | `NEXT_PUBLIC_*` | `up -d --build frontend` | Yes (frontend) |
-| Application code | merge to `main` (CI/CD) or `bash deploy/deploy.sh` on the box | Yes (automatic) |
+| Application code | deploys are disabled until go-live ([DEPLOYMENT.md](../DEPLOYMENT.md)) | — |
+
+A PDF or DOCX is rendered once, when its audit completes: a changed call-to-action or profile shows
+up in new reports and on the web page immediately, but existing files keep the old one.
 
 ### Adding or changing a backend key
 
 ```bash
 ssh <user>@<box>
-cd ~/blc-social-audit
+cd ~/blc-rick-seo-agent
 cp .env .env.bak.$(date +%F)     # back up first
-nano .env                        # e.g. APIFY_API_TOKEN=..., YOUTUBE_API_KEY=...
-docker compose -f docker-compose.prod.yml up -d --force-recreate api worker
+nano .env                        # e.g. APIFY_API_TOKEN=..., BOOKING_URL=...
+docker compose -p blc-rick-seo-agent -f docker-compose.prod.yml up -d --force-recreate api worker
 # confirm without printing secrets:
-docker compose -f docker-compose.prod.yml exec worker printenv | grep -E 'APIFY|YOUTUBE' | sed 's/=.*/=<set>/'
+docker compose -p blc-rick-seo-agent -f docker-compose.prod.yml exec worker printenv | grep -E 'APIFY|BOOKING' | sed 's/=.*/=<set>/'
 ```
 
-The worker does all collection (social, PSI, Search Console, AI Visibility); the api needs
-recreating for auth (`CLERK_*`), the Search Console connect flow and `AI_VISIBILITY_ENABLED`. When
-in doubt, recreate both. Note `Settings` is `lru_cache`d — a restart is the only way to pick up a
-change.
-
-⚠️ Changing `POSTGRES_PASSWORD` after the volume exists does **not** change the actual Postgres role
-password, only the connection string. Rotating it is a separate `ALTER ROLE` operation.
+`Settings` is `lru_cache`d, so a restart is the only way to pick up a change. ⚠️ Changing
+`POSTGRES_PASSWORD` after the volume exists does **not** change the actual Postgres role password,
+only the connection string; rotating it is a separate `ALTER ROLE`.
 
 ## 3. Deploying
 
-Merging to `main` auto-deploys. By hand on the box, **always** use the script:
-
-```bash
-bash deploy/deploy.sh              # deploy origin/main HEAD
-bash deploy/deploy.sh <sha>        # roll back to a known-good commit
-```
-
-It resets to the commit, builds the three images sequentially, rolls the stack, reattaches Caddy to
-`blc-edge`, validates and gracefully reloads the Caddyfile, and polls `/health` for ~150 s — leaving
-the previous healthy containers serving if anything fails. CI/CD **never** touches `.env`.
+Disabled — see [DEPLOYMENT.md](../DEPLOYMENT.md) §1 for the locks and §4 for the checklist. Once
+enabled, the script builds the images one at a time and rolls the stack forward: a failed build
+leaves the previous containers serving, but a failed health gate leaves the new ones up, so roll
+back with `bash deploy/deploy.sh <previous-sha>`.
 
 ## 4. Cron jobs (host crontab)
 
-Each entry must stay on **one line** — crontab has no `\` continuation — and a literal `%` must be
-written `\%`.
+Each entry must stay on **one line** (crontab has no `\` continuation) and a literal `%` must be
+written `\%`. The log and backup names carry a `rick` prefix so they never overwrite the parent's
+files on the shared box.
 
 ```bash
 # storage retention — prune reports/screenshots/tool-exports past STORAGE_RETENTION_DAYS (default 90)
-0 3 * * * cd ~/blc-social-audit && docker compose -f docker-compose.prod.yml exec -T api python scripts/cleanup_storage.py >> ~/blc-cleanup.log 2>&1
+0 3 * * * cd ~/blc-rick-seo-agent && docker compose -p blc-rick-seo-agent -f docker-compose.prod.yml exec -T api python scripts/cleanup_storage.py >> ~/rick-cleanup.log 2>&1
 # operational alerting — posts to ALERT_WEBHOOK_URL on failed-audit / stuck-job thresholds
-*/15 * * * * cd ~/blc-social-audit && docker compose -f docker-compose.prod.yml exec -T api python scripts/health_alert.py >> ~/blc-alert.log 2>&1
-# nightly backup — pg_dump INSIDE the postgres container (the api/worker images ship no pg_dump).
-# pipefail means a failed dump skips the prune, so a broken dump can't age out the last good backups.
-30 2 * * * mkdir -p ~/backups && cd ~/blc-social-audit && bash -o pipefail -c "docker compose -f docker-compose.prod.yml exec -T postgres pg_dump -U blc blc_website_audit | gzip > ~/backups/blc_$(date +\%F).sql.gz" >> ~/blc-backup.log 2>&1 && find ~/backups -name 'blc_*.sql.gz' -mtime +14 -delete
+*/15 * * * * cd ~/blc-rick-seo-agent && docker compose -p blc-rick-seo-agent -f docker-compose.prod.yml exec -T api python scripts/health_alert.py >> ~/rick-alert.log 2>&1
+# nightly backup — pg_dump INSIDE the postgres container (the api/worker images ship no pg_dump)
+30 2 * * * mkdir -p ~/backups && cd ~/blc-rick-seo-agent && bash -o pipefail -c "docker compose -p blc-rick-seo-agent -f docker-compose.prod.yml exec -T postgres pg_dump -U blc blc_rick_seo_agent | gzip > ~/backups/rick_$(date +\%F).sql.gz" >> ~/rick-backup.log 2>&1 && find ~/backups -name 'rick_*.sql.gz' -mtime +14 -delete
 ```
 
-Backups contain the plaintext Google OAuth tokens — keep `~/backups` on-box and access-controlled,
-copy them off-box deliberately, and never write backups inside the repo directory.
-
-Check what's installed with `crontab -l`. Live metrics: `GET /metrics` (Clerk-gated) returns audit
-and storage stats as JSON.
+The backup's database name must match `POSTGRES_DB` in the box's `.env` (the compose default is
+`blc_website_audit`; set `POSTGRES_DB=blc_rick_seo_agent` there, as `.env.template` does). Backups
+contain every fix the teaser hides (§8); keep `~/backups` on-box and access-controlled.
+`GET /metrics` returns audit and storage stats as JSON (operator endpoint — see §8).
 
 ## 5. AI Visibility (Semrush)
 
-**What it is.** A presentation-only report section showing how the brand appears in AI answers
-(ChatGPT, Google AI Overviews/AI Mode, Gemini, Perplexity), read from the **Semrush AI Visibility
-Toolkit** — a paid add-on on the team's existing Semrush account. Semrush publishes no API for it,
-so a Playwright bot replays a **saved browser session**, screenshots the dashboard, and an OpenAI
-vision model reads the numbers. Facts live in `score_breakdown["ai_visibility"]` (no DB column) and
-render on the PDF, DOCX and UI. **It never feeds scoring** — scores are byte-identical whether it
-ran or not.
+**What it is.** A presentation-only report section showing how the brand appears in AI answers,
+read from the **Semrush AI Visibility Toolkit**. Semrush publishes no API for it, so a Playwright bot
+replays a **saved browser session**, screenshots the dashboard, and an OpenAI vision model reads the
+numbers. It never feeds scoring.
 
-**When it runs.** With `AI_VISIBILITY_ENABLED=true` it **auto-runs on every website/combined audit**
-at 97%, after the result is committed. It can also be re-run alone with **Refresh AI Visibility**.
-Each run is one live Semrush page load plus one paid vision call, so it adds latency and cost per
-audit. While the flag is `false` the refresh endpoint returns **409** and the collector skips before
-any network call.
+**When it runs.** With `AI_VISIBILITY_ENABLED=true` it auto-runs on every website/combined audit at
+97%. Each run is one Semrush page load plus one paid vision call. `OPENAI_API_KEY` is required.
 
-**One session per account — the usual cause of a missing section.** Semrush allows one live session
-per account: anyone signing into the same Semrush login evicts the bot, and minting a bot session
-evicts them. A second Semrush seat is the only clean fix. Two mitigations exist in code: a
-successful scrape re-persists the session so rotating cookies extend its life, and a stale session is
-retried once — but only when `SEMRUSH_ALLOW_HEADLESS_LOGIN=true` with email and password both set.
+**This edition shares the parent's Semrush account.** Semrush allows **one live session per
+account**, so minting a session here signs out the parent's bot (and vice versa). The bot never
+types the password by default (`SEMRUSH_ALLOW_HEADLESS_LOGIN=false`): with no valid session it skips
+without launching a browser. A second Semrush seat is the only clean fix
+([DEPLOYMENT.md](../DEPLOYMENT.md) §3).
 
-**Account safety.** By default the bot **never types the password**: with no saved session it returns
-"no session" *without even launching a browser*, and the report shows an honest "connect Semrush"
-note. Turning that flag on re-introduces CAPTCHA and lockout risk.
+**What readers see.** The full profile shows a "could not retrieve" note when the section cannot
+collect; the **teaser leaves the section out entirely**, so prospects never see an operator note.
 
-### Minting the session (a human, once)
+### Minting the session (a person, once)
 
-On the server — the session must come from the **server's IP**:
+Locally (opens a real browser window; sign in, clear any CAPTCHA, press Enter in the terminal):
 
 ```bash
-make semrush-connect COMPOSE="docker compose -f docker-compose.prod.yml"
+python scripts/check_semrush_ai_visibility.py --login
 ```
 
-That starts Xvfb + fluxbox + x11vnc inside the worker and prints a one-time VNC password. From your
-laptop: `ssh -L 5900:localhost:5900 <user>@<box>`, point a VNC viewer at `localhost:5900`, log into
-Semrush until you actually see the dashboard, then press Enter in the make terminal. The VNC port is
-bound to the server's localhost only and is never public; the session lands on the mounted `storage`
-volume.
-
-Locally (opens a real browser window): `python scripts/check_semrush_ai_visibility.py --login`.
-Copying a laptop session up with `scp` only works if Semrush tolerates the IP change — if it keeps
-logging out, mint it on the server.
+On the server the session must come from the server's IP:
+`make semrush-connect COMPOSE="docker compose -p blc-rick-seo-agent -f docker-compose.prod.yml"`,
+then `ssh -L <port>:localhost:<port> <user>@<box>` and a VNC viewer (the VNC host port changes at
+go-live, see [DEPLOYMENT.md](../DEPLOYMENT.md) §4). The session lands in
+`SEMRUSH_SESSION_STATE_PATH` on the storage volume.
 
 ### Settings
 
 | Var | Default | Notes |
 |---|---|---|
-| `AI_VISIBILITY_ENABLED` | `false` | master switch — gates both the auto-run and the refresh |
+| `AI_VISIBILITY_ENABLED` | `false` | master switch — gates the auto-run and the refresh endpoint (409 while off) |
 | `AI_VISIBILITY_PROVIDER` | `semrush` | the only provider registered |
 | `AI_VISIBILITY_VISION_MODEL` | *(empty)* | falls back to `OPENAI_MODEL`; must be vision-capable |
 | `AI_VISIBILITY_HEADLESS` | `true` | |
 | `AI_VISIBILITY_TIMEOUT_SECONDS` | `90` | page/navigation timeout |
-| `AI_VISIBILITY_RENDER_WAIT_SECONDS` | `10` | ceiling for the score gauge to paint; too low and a half-drawn screenshot extracts as empty |
+| `AI_VISIBILITY_RENDER_WAIT_SECONDS` | `10` | ceiling for the score gauge to paint |
 | `SEMRUSH_EMAIL` | *(empty)* | also the "intent" signal that lets the connect note render |
 | `SEMRUSH_PASSWORD` | *(unset)* | only used if headless login is opted into |
-| `SEMRUSH_SESSION_STATE_PATH` | `./storage/semrush_session.json` | plaintext cookies on the storage volume — never commit or bake into an image |
-| `SEMRUSH_ALLOW_HEADLESS_LOGIN` | `false` | the account-safety flag |
+| `SEMRUSH_SESSION_STATE_PATH` | `./storage/semrush_session.json` | plaintext cookies — never commit or bake into an image |
+| `SEMRUSH_ALLOW_HEADLESS_LOGIN` | `false` | the account-safety flag; keep it off here |
 
-`OPENAI_API_KEY` is also required — the extraction is vision-based.
-
-**Skip and failure states.** Config skips (disabled, no provider, missing credentials) omit the
-section silently and leave the report byte-identical. A blocked or empty run is *deliberately shown*
-as a "could not retrieve" note rather than hidden: no session, CAPTCHA, login blocked, or a
-screenshot that read empty. A failed auto-run rolls back and leaves the committed audit intact; a
-failed refresh restores the previous result and re-marks the job complete, so a bad run never flips a
-finished audit to failed. Screenshots land in `storage/screenshots/semrush_ai_visibility/` and are
-pruned by the retention cron.
+Screenshots land in `storage/screenshots/semrush_ai_visibility/`; the retention cron removes that
+folder only once its newest file is past the window, so they accumulate while runs continue.
 
 **ToS.** Semrush's terms prohibit automated access without prior written approval, and they may
-suspend the account. That is a business-risk decision the operator owns: keep volume human-scale,
-prefer the saved session over repeated logins, and ideally get written approval for low-volume
-automated use of your own paid account.
+suspend the account — a business-risk decision the operator owns. Keep volume human-scale.
 
 ## 6. Day-2 tasks
 
-- **Logs:** `docker compose -f docker-compose.prod.yml logs -f api worker`. A render error like
-  `'dict object' has no attribute …` usually means a **stale worker** — Celery doesn't hot-reload,
-  so `up -d --force-recreate worker`.
-- **Disk:** `df -h`, `docker system df`; reclaim with `docker image prune -f` / `docker builder prune -f`.
-- **Caddy:** `docker network inspect blc-edge` should list Caddy plus the three sibling app
-  containers. Never start a second proxy on 80/443.
-- 🔴 **Never `docker compose down -v`** — `-v` wipes `postgres_data` and `storage` (every audit and
-  report). Plain `down` is safe.
+- **Logs:** `docker compose -p blc-rick-seo-agent -f docker-compose.prod.yml logs -f api worker`. A
+  render error like `'dict object' has no attribute …` usually means a **stale worker** — Celery
+  doesn't hot-reload, so `up -d --force-recreate worker`.
+- **Disk:** `df -h`, `docker system df`; reclaim with `docker image prune -f`.
+- **Proxy:** this edition owns no proxy; the parent's Caddy routes its hostname. Never start a
+  second proxy on 80/443.
+- 🔴 **Never `docker compose down -v`** — `-v` wipes `postgres_data` and `storage`. Plain `down` is
+  safe.
 
 ## 7. Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| 502 for a few seconds right after a deploy | API still migrating / warming up | Wait; the health gate covers it |
-| Combined audit has no social section | `APIFY_API_TOKEN` / `YOUTUBE_API_KEY` missing | Add them, recreate api + worker (§2) |
-| Every audit returns **401** | Wrong/empty `CLERK_ISSUER`, or the token's `azp` isn't allowed | Fix `CLERK_ISSUER` / `CLERK_AUTHORIZED_PARTIES` |
-| A signed-in user gets **403** | Their Clerk `sub` isn't in `CLERK_ALLOWED_SUBJECTS` | Add their `user_…` id, recreate api |
-| "Refresh AI Visibility" returns **409** | `AI_VISIBILITY_ENABLED=false` | Set it true, recreate **api and worker** |
-| AI Visibility section says unavailable | Saved Semrush session expired or evicted | Re-mint it (§5) |
-| Deploy build fails / OOM | `next build` on a 4 GB box | Confirm the 2 GB swap is active (`swapon --show`) |
-| Frontend shows a stale Clerk key or API URL | `NEXT_PUBLIC_*` baked into an old image | `up -d --build frontend` |
+| Visitors are asked to sign in | The frontend was built without `NEXT_PUBLIC_PUBLIC_AUDITS_ENABLED=true` | Rebuild the frontend |
+| 403 "Operator endpoints are disabled on this public deployment." | Expected: public mode, no `CLERK_ISSUER` | Use a Clerk token, or run the operation locally |
+| 422 "Social-only audits are not available" | Expected in public mode | Submit a website URL; social links are optional |
+| A report shows an old call-to-action or profile | The PDF/DOCX was rendered before the change | New audits pick it up; the web page already has |
+| Report still shows fixes | api and worker disagree on `REPORT_PROFILE` | Both are pinned in `docker-compose.prod.yml`; recreate both |
+| AI Visibility section missing (teaser) | No valid Semrush session, or `AI_VISIBILITY_ENABLED=false` | §5 |
+| Combined audit has no social section | `APIFY_API_TOKEN` / `YOUTUBE_API_KEY` missing, or the site links no profiles | Add the keys, recreate api + worker |
+| Audits sit at `queued` | Worker down, or pointed at another broker | Check `docker compose ps`, worker logs |
+| Build fails / OOM | `next build` on a small box | Confirm swap is active (`swapon --show`); build one image at a time |
 
 ## 8. Security posture
 
-- **Clerk is still a dev instance** with open self-registration. Set the Clerk dashboard to
-  invitation-only and/or set `CLERK_ALLOWED_SUBJECTS` to your operators' user ids.
-- **`.env` is the only place secrets live on the box** — `chmod 600`, never committed, and the
-  `.env.bak.*` copies deserve the same care.
-- **Google OAuth tokens are stored unencrypted** in the database (an accepted risk for a single
-  internal VM). The real exposure is a DB dump leaving the box — see the backup note in §4.
-- **API keys never ride in URLs** (Apify, YouTube, PageSpeed and Places all authenticate by header)
-  and the HTTP client loggers are held at WARNING, so credentials don't reach `docker compose logs`.
-- **`/docs`, `/redoc` and `/openapi.json` are disabled** in production.
+- **Visitors are anonymous.** Anyone can start an audit and anyone with an `/audit/<id>` link can
+  read that report; the link never expires. There is **no rate limiting yet** — a go-live blocker
+  ([LIMITATIONS.md](LIMITATIONS.md) §2).
+- **Operator endpoints** (history, reruns, share links, `/metrics`) answer 403 on a deployment
+  without `CLERK_ISSUER`, so they never fall open.
+- **The teaser hides fixes; the database keeps them.** Backups and DB access expose everything.
+- **`.env` holds every secret** (`chmod 600`, never committed; `.env.bak.*` deserves the same care).
+  This edition currently reuses the parent's API keys, so their quota and billing are shared.
+- **No Google OAuth tokens are stored** (Search Console is off).
+- **API keys never ride in URLs** and the HTTP client loggers are held at WARNING, so credentials
+  don't reach the logs. `/docs`, `/redoc` and `/openapi.json` are disabled when
+  `APP_ENV=production`.

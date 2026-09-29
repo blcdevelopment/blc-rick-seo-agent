@@ -4,7 +4,7 @@ An honest list of what the tool does **not** do and the behavioural caveats wort
 you trust a number. What is deliberately out of scope (and why) lives in
 [PRODUCT.md](PRODUCT.md); this file is about how the built thing actually behaves.
 
-_Last reconciled: 2026-09-16._
+_Last reconciled: 2026-09-28 (Rick edition)._
 
 ---
 
@@ -23,7 +23,8 @@ public company-data API, partner access is priced out of reach, and their user a
 scraping.
 
 **Connected-mode YouTube Analytics exists but is off.** When enabled it only ever reports on the
-*connected* account's own channel, so it audits clients, not prospects.
+*connected* account's own channel, so it audits clients, not prospects. It is unavailable in this
+edition: it rides on the Google connect flow, which `SEARCH_CONSOLE_ENABLED=false` removes.
 
 ### 1.1 Combined audit (website + social) — behavioral caveats
 
@@ -36,7 +37,7 @@ one report (PDF and DOCX). Known limits of that flow:
   Audit page (a website URL is required, social links are optional, and adding any handle makes
   it a `combined` audit). The backend `audit_type="social"` still exists and past social-only
   audits still render in history/detail — but you can't start a new social-only run without a URL
-  through the operator UI.
+  through the UI, and in public mode (`PUBLIC_AUDITS_ENABLED`) the API refuses one too (422).
 - **The combined report needs `rubrics/overall.yaml` deployed.** Overall Lead-Gen Readiness is
   config-driven (`compose_overall_readiness_score`). If `overall.yaml` is missing/unreadable or a
   provider returns bad data, the social/overall step is caught and the audit **gracefully degrades
@@ -69,7 +70,8 @@ one report (PDF and DOCX). Known limits of that flow:
   meaningful only when the CLIENT's account is the one connected (the owner-consent model). A
   dedicated per-platform OAuth token store (SMWA-139) is deliberately deferred — YouTube reuses
   the GSC token store, and a separate table only becomes necessary when a Meta Graph provider
-  (SMWA-141, blocked on Meta App Review + Business Verification) lands.
+  (SMWA-141, blocked on Meta App Review + Business Verification) lands. Not available in this
+  edition (no Google connect flow while `SEARCH_CONSOLE_ENABLED=false`).
 - **No new DB column for the headline score.** Overall Lead-Gen Readiness lives in the
   `score_breakdown` JSON (`overall_readiness`), and `audit_type` is a free `String(20)` column —
   there is **no new Alembic migration** (head is still `20260625_0005`).
@@ -78,22 +80,36 @@ one report (PDF and DOCX). Known limits of that flow:
 
 ## 2. Security & Access
 
-- **Authentication is live but optional by environment.** Clerk UI/API auth is wired in:
-  the whole `/audits/*` router is gated with `Depends(require_user)`, and the frontend
-  forwards a fresh Clerk bearer token on every API call. Auth is **opt-in** — when
-  `CLERK_ISSUER` is empty, `require_user()` returns `None` and the API is **open**, which is
-  exactly how local dev, the unit tests, and the QA harness run unauthenticated. Production
-  sets `CLERK_ISSUER` (the prod compose has a fail-fast `${CLERK_ISSUER:?}` guard) along with
-  `CLERK_AUTHORIZED_PARTIES` and the frontend Clerk keys. The Google OAuth callback
-  (`GET /google/search-console/callback`) is intentionally unauthenticated because Google
-  calls it; it is protected instead by an HMAC-signed, time-limited CSRF `state`.
+- **Visitors are anonymous; operators are Clerk-gated.** With `PUBLIC_AUDITS_ENABLED` (this
+  edition) the visitor endpoints — create an audit, poll it, read the report JSON, PDF and DOCX —
+  are open to anyone (`require_visitor`), and the public UI build sends no token. The operator
+  endpoints (history, reruns, share links, `/metrics`) keep `require_user`: Clerk when
+  `CLERK_ISSUER` is set, open when it is empty — how local dev, the unit tests and the QA harness
+  run — **except** that a public deployment (any `APP_ENV` other than local/dev/test) without
+  `CLERK_ISSUER` answers 403, so they never fall open. Without public mode every audit endpoint is
+  Clerk-gated, as in the parent app. The Google OAuth callback exists only when
+  `SEARCH_CONSOLE_ENABLED` and is intentionally unauthenticated because Google calls it; it is
+  protected instead by an HMAC-signed, time-limited CSRF `state`.
+- **Public mode has no abuse controls yet — fix before going public.** There is no rate limit,
+  CAPTCHA or quota. One anonymous submission runs a Playwright crawl (up to
+  `CRAWLER_MAX_PAGES`, default 10), a site-health sweep (up to 150 internal + 50 outbound URL
+  checks), PageSpeed calls, and — when the site links its social profiles or the visitor adds them
+  — Apify / YouTube / Google Places calls, plus a Semrush page load and a paid vision call when AI
+  Visibility is on. All of it runs on one worker, one audit at a time (a real site takes ~8–10
+  minutes), and on API keys shared with the parent app, so a flood both delays every visitor and
+  spends the parent's quota.
+- **A public report's URL is its only key.** Anyone with an `/audit/<id>` link (a random UUID)
+  can read that report. Unlike a share link it never expires and cannot be revoked, and audit rows
+  are never pruned (§8).
+- **The teaser is a presentation filter, not a data guarantee.** Every fix is still computed and
+  stored (rubric `remediation` in `score_breakdown`, action items in `commentary`) and therefore
+  in database backups; only the report composition strips it.
   _Hardened (2026-06-26):_ the `azp` check now rejects a token that simply **omits** the claim
   (no longer slips past), and an optional `CLERK_ALLOWED_SUBJECTS` allowlist restricts access to
   named Clerk user IDs on top of the issuer/party checks.
-- **Clerk is currently a DEV instance** (`pk_test_…`). **Open sign-up is a known security
-  gap**: anyone can self-register on the dev instance, so invitation-only access is a manual
-  operator step today. Switching to a Clerk production instance and locking down sign-up is
-  productionization work.
+- **Clerk (operator endpoints only).** This edition has no Clerk instance of its own. If one is
+  added for operators, use a production instance with invitation-only sign-up — the parent's
+  dev instance allows open self-registration, a known gap there.
 - **SSRF protection is layered and now covers mid-render requests.** The page crawler blocks
   private/loopback hosts by default (`CRAWLER_ALLOW_PRIVATE_HOSTS=false`), validates the start
   URL, re-validates the post-redirect host, **and** attaches a request-level route guard that
@@ -101,14 +117,17 @@ one report (PDF and DOCX). Known limits of that flow:
   renders (`CRAWLER_INTERCEPT_REQUESTS`, default true; auto-disabled when private hosts are
   allowed, e.g. the QA harness). The **site-health sweep re-validates every redirect hop**
   through the same guard, and its bot-block browser recheck is **redirect-blind by design**
-  (2026-07-03) so an open redirect can't steer it. Residual caveat: submitted URLs are still
-  untrusted input — keep the service behind auth rather than exposing it publicly.
+  (2026-07-03) so an open redirect can't steer it. Residual caveat: submitted URLs are untrusted
+  input, and in public mode anyone can submit one, so these guards are the only barrier between
+  anonymous input and the server's network — keep them on (`CRAWLER_ALLOW_PRIVATE_HOSTS=false`).
 - Secrets live in `.env`; there is no secrets manager integration yet.
 - **White-label `logo_url` is now SSRF-vetted.** A remote logo URL supplied via brand overrides is
   validated against the same private/loopback/metadata host rules as the crawler
   (`report_branding._remote_logo_url_allowed`) **before** WeasyPrint fetches it at render time, so
-  the override can't point the server-side fetch at an internal host.
-- Google Search Console refresh tokens are stored **plaintext** in the application database. For
+  the override can't point the server-side fetch at an internal host. In public mode
+  `brand_overrides` is ignored entirely, so visitors cannot white-label a report.
+- Google Search Console refresh tokens are stored **plaintext** in the application database
+  (only relevant when `SEARCH_CONSOLE_ENABLED`; no tokens are ever stored in this edition). For
   the single internal VM this is a **documented accepted risk** (single-tenant, internal-only DB);
   encrypting these fields at rest (or moving them into a managed secrets store) is open
   productionization work before connecting real external client accounts.
@@ -172,8 +191,8 @@ one report (PDF and DOCX). Known limits of that flow:
   supported for a licensed operator machine via `SCREAMING_FROG_ENABLED` + binary path;
   when it completes, its data fills the technical crawl slot instead of the sweep, and its
   subprocess timeout is clamped under the Celery soft time limit.
-- Search Console data is available only for Google properties the connected account can
-  access. No matching property means GSC and URL Inspection facts are skipped.
+- **Search Console (only when `SEARCH_CONSOLE_ENABLED`; off in this edition).** Search Console data
+  is available only for Google properties the connected account can access. No matching property means GSC and URL Inspection facts are skipped.
 - The app uses official Google APIs. It does not scrape the Search Console Insights UI.
 - URL Inspection is quota-limited and only runs for a small priority URL set; runs with
   per-URL failures are reported as `partial` and never count toward the score.
@@ -205,7 +224,9 @@ one report (PDF and DOCX). Known limits of that flow:
   Two OpenAI paths *are* live when `OPENAI_API_KEY` is set: the **standalone social audit**
   polishes its rule-derived findings (`prompts/commentary_social_*.md`, grounded, deterministic
   fallback on any failure), and **AI Visibility** reads the Semrush dashboard with a vision model
-  (§9). Neither changes a score.
+  (§9). Neither changes a score. Under the teaser profile the social polish still runs and is
+  billed, but its prose is discarded at render; public mode refuses social-only audits, so in this
+  edition it runs only for social audits created with public mode off.
 - The **grounding validator strips unsupported _numeric_ claims** by comparing
   numbers in the commentary against extracted facts (timeframe phrases such as
   "1–3 months" are masked first so they survive). If stripping would empty a field
@@ -230,13 +251,20 @@ one report (PDF and DOCX). Known limits of that flow:
 
 - **Report storage is local filesystem only.** PDFs are written under
   `storage/reports/`; there is no object-storage backend.
+- **Generated files keep the profile they were rendered with.** The worker renders the PDF and
+  DOCX once, when an audit completes; the API serves them from disk but composes the JSON (and the
+  UI) per request. Changing `REPORT_PROFILE` therefore switches the page immediately while older
+  PDFs/DOCX keep the old profile (a pruned DOCX is regenerated with the API's current profile).
+  The API and the worker must run with the same value.
 - **Database migrations target PostgreSQL** (they enable `pgcrypto`). SQLite is
   only used by the QA harness via `create_all`, not via Alembic.
 - **File retention is cron-driven:** `scripts/cleanup_storage.py` prunes reports,
   screenshots and tool exports older than `STORAGE_RETENTION_DAYS` (default 90), but only if
   the host cron is installed — there is no in-app scheduler. **Old audit rows are never
-  pruned**, so a job older than the window keeps its DB row after its PDF is gone (the download
-  endpoint then 404s).
+  pruned**, so a job older than the window keeps its DB row after its PDF is gone (the PDF
+  download then 404s; the DOCX is regenerated on request). AI Visibility screenshots share one
+  folder (`storage/screenshots/semrush_ai_visibility/`), which is pruned only once its newest file
+  is past the window, so they accumulate while AI Visibility runs regularly.
 
 ---
 
@@ -252,10 +280,13 @@ one report (PDF and DOCX). Known limits of that flow:
 - **AI Visibility (Semrush) is fragile by nature.** There is no Semrush API for it: a Playwright
   bot replays a saved Semrush session and a vision model reads a screenshot. When enabled it runs
   on **every** website/combined audit (latency + one paid vision call each). Semrush allows one
-  live session per account, so a human logging into the same account evicts the bot (the report
-  then shows an honest "could not retrieve" note); selectors may drift; automating Semrush may need
+  live session per account, so a human logging into the same account evicts the bot (the full
+  report then shows an honest "could not retrieve" note; the teaser simply omits the section).
+  This edition shares the parent's Semrush account, so a fresh login here signs out the parent's
+  bot and vice versa; selectors may drift; automating Semrush may need
   their written approval (docs/OPERATIONS.md §5). It never affects scores.
-- **No horizontal-scale tuning**; a single worker processes audits.
+- **No horizontal-scale tuning**; a single worker processes audits one at a time, which matters
+  once anonymous visitors can queue them (§2).
 - The local Docker Compose stack uses a dev bind-mount and `--reload`; it is for
   development, not production serving.
 
@@ -263,12 +294,15 @@ one report (PDF and DOCX). Known limits of that flow:
 
 ## 10. Recommended next steps
 
-1. Harden the now-live Clerk auth: move to a Clerk **production** instance and close open
-   sign-up (invitation-only). _(Request-level SSRF interception in the crawler is now DONE —
+1. **Before going public:** rate limiting / CAPTCHA on `POST /audits`, per-audit cost limits, and
+   enough worker capacity for the expected traffic (§2).
+2. If operators get a Clerk login, use a Clerk **production** instance with invitation-only
+   sign-up. _(Request-level SSRF interception in the crawler is now DONE —
    `crawler_intercept_requests`; the `azp` check now rejects a missing claim and a
    `CLERK_ALLOWED_SUBJECTS` allowlist is available — see §2.)_
-2. Encrypt Google OAuth/refresh tokens at rest (or move them into a secrets manager).
-3. ~~Add data retention/cleanup for `storage/` and old audit rows.~~ **DONE** —
+3. Encrypt Google OAuth/refresh tokens at rest (or move them into a secrets manager) before
+   Search Console is ever turned on.
+4. ~~Add data retention/cleanup for `storage/` and old audit rows.~~ **DONE** —
    `cleanup_storage` + `STORAGE_RETENTION_DAYS` (cron on the host).
-4. Continue the deferred scope (live benchmarking providers and analytics) — see PRODUCT.md §9.
+5. Continue the deferred scope (live benchmarking providers and analytics) — see PRODUCT.md §9.
    _(The social audit and the benchmarking scaffold are already built.)_

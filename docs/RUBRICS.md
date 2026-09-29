@@ -55,8 +55,8 @@ is never penalized for the absent data (see §4 and §6).
   # --- content-plan metadata (optional; consumed by content_plan.py) ---
   impact: high                                 # high | medium | low (default medium)
   tier: quick_win                              # quick_win | mid_term | long_term (default quick_win)
-  finding_label: Pages are missing meta descriptions   # user-facing problem (no rule IDs)
-  remediation: Write a unique 120-160 char meta description for each page.
+  finding_label: Meta descriptions are missing on some pages   # user-facing problem (no rule IDs)
+  remediation: Add a unique 70-160 character meta description to every page.
   surface_as_finding: true                     # default true; false hides meta/health rules
 ```
 
@@ -70,7 +70,12 @@ is never penalized for the absent data (see §4 and §6).
 - **Content-plan metadata** (`impact`, `tier`, `finding_label`, `remediation`,
   `surface_as_finding`) does **not** affect the score. It is read by
   `content_plan.build_content_plan` to author the deterministic findings and
-  recommendations in the report (see [RUBRICS.md](RUBRICS.md)).
+  recommendations in the report (see §8). Under the **teaser** report profile (this edition's
+  `REPORT_PROFILE=teaser`) `remediation`, `tier` and everything derived from them are still
+  computed and stored, then removed when the report is composed
+  (`report_profile.apply_report_profile`), so editing them has no visible effect there.
+  `finding_label` (the finding title) and `description` (the rule lists) *are* shown in the
+  teaser, so they must state the problem and never the fix.
   All five fields are optional in the schema (`RubricRule` in `scoring.py`) — the
   defaults are `impact=medium`, `tier=quick_win`, `finding_label=None`,
   `remediation=None`, `surface_as_finding=true`. Set `surface_as_finding: false`
@@ -95,8 +100,8 @@ is never penalized for the absent data (see §4 and §6).
 | `threshold` | meets `min`/`max` bounds | meets `partial_min`/`partial_max` | `min`, `max`, `partial_min`, `partial_max` |
 | `linear_scale` | value ≥ end of `input_range` | proportionally between start/end | `input_range: [start, end]` |
 
-Each rule yields a result of `pass` (ratio 1.0), `partial` (0.5), `fail` (0.0),
-or `skipped`. Points awarded = `weight × ratio`.
+Each rule yields a result of `pass` (ratio 1.0), `partial` (0.5; proportional for
+`linear_scale`), `fail` (0.0), or `skipped`. Points awarded = `weight × ratio`.
 
 **`threshold` is overloaded by direction:**
 
@@ -114,10 +119,15 @@ or `skipped`. Points awarded = `weight × ratio`.
 | Family | `fact_path` prefix | Evaluator | `skip_if_missing` | Source stage |
 |---|---|---|---|---|
 | On-page SEO | `seo.*` | mixed (`boolean`, `presence`, `threshold`, …) | mostly `false` | `extractor_seo.py` |
-| Answer-engine readiness (AEO) | `seo.summary.*_heading_*`, `seo.summary.has_extractable_structure` | `boolean`, `threshold` | `false` | `extractor_seo.py` (`_extract_aeo`) |
+| Answer-engine readiness (AEO) | `seo.summary.all_pages_heading_hierarchy_ok`, `…total_question_headings`, `…has_extractable_structure` | `boolean`, `threshold` | `false` | `extractor_seo.py` (`_extract_aeo`) |
 | Local-SEO | `seo.summary.has_complete_nap_schema`, `…has_service_area_markup`, `…has_map_or_gbp_link`, `…has_visible_address` | `boolean` | `false` | `extractor_seo.py` (`_extract_local`) |
 | Accessibility (a11y) | `seo.summary.all_pages_have_lang`, `…all_pages_have_main_landmark`, `…viewport_allows_zoom`, `…total_positive_tabindex`, `…unlabeled_form_controls`, `…empty_links`, `…empty_buttons`, `…duplicate_referenced_ids` | `boolean`, `threshold` | mixed (element-dependent rules `true`) | `extractor_seo.py` (`_extract_a11y`) |
 | UX/UI | `uxui.*` | mixed | mostly `false` (the form-capture, contact-path and homepage field-count rules are `true`, so pre-v3 stored facts / uncountable embeds rescale) | `extractor_uxui.py` |
+| PageSpeed | `psi.summary.avg_*_performance` | `linear_scale` | **`true`** | `psi_client.py` |
+| Core Web Vitals (CrUX field data) | `psi.summary.crux.*` (`lcp_p75_ms`, `inp_p75_ms`, `cls_p75`) | `threshold` (lower-is-better) | **`true`** | `psi_client.py` |
+| Technical crawl | `external_seo.technical_crawl.summary.*` | `threshold` (lower-is-better) | **`true`** | `external_seo.py` / `site_health.py` |
+| Search Console | `external_seo.gsc.summary.*` | `threshold` (lower-is-better) | **`true`** | `google_search_console.py` |
+| URL Inspection | `external_seo.url_inspection.summary.*` | `threshold` (lower-is-better) | **`true`** | `google_search_console.py` |
 
 > **Scope of the static accessibility module.** The `seo.a11y.*` rules are a
 > *static-HTML accessibility screen*: every check is computed deterministically from the
@@ -135,12 +145,8 @@ or `skipped`. Points awarded = `weight × ratio`.
 > forms/buttons/links/id-references/viewport-meta rescales rather than being vacuously credited.
 > Automated tooling of any kind reliably detects only roughly **a third to a half** of WCAG
 > success criteria; absence of detected issues here is **not** a proof of conformance.
-| PageSpeed | `psi.summary.avg_*_performance` | `linear_scale` | **`true`** | `psi_client.py` |
-| Technical crawl | `external_seo.technical_crawl.summary.*` | `threshold` (lower-is-better) | **`true`** | `external_seo.py` / `site_health.py` |
-| Search Console | `external_seo.gsc.summary.*` | `threshold` (lower-is-better) | **`true`** | `google_search_console.py` |
-| URL Inspection | `external_seo.url_inspection.summary.*` | `threshold` (lower-is-better) | **`true`** | `google_search_console.py` |
 
-The PSI, technical-crawl, GSC, and URL-Inspection families are **all**
+The PSI, Core Web Vitals, technical-crawl, GSC, and URL-Inspection families are **all**
 `skip_if_missing: true`. When their source degrades (no API key, source returned a
 non-`complete` status, or no data), the facts are absent and the rules are skipped
 rather than failed — so a missing or failed source never drags the score down (§4,
@@ -245,8 +251,8 @@ top-of-funnel demand generation and nurture — meaningful but secondary.
 **Rescale when social is missing:** if the social audit produced no score, the readiness
 **rescales to the website Lead-Gen score alone** (`status: website_only`, the social weight
 drops out) — so a combined audit whose social step degraded still gets a sensible headline
-number from the website alone (and a website-only result has `website_lead_gen=None` →
-`status: skipped`, `score: None`). The result is stored in `score_breakdown["overall_readiness"]`
+number from the website alone (and when the website Lead-Gen input itself is missing,
+`website_lead_gen=None` → `status: skipped`, `score: None`). The result is stored in `score_breakdown["overall_readiness"]`
 (JSON) — there is **no** new DB column.
 
 Config knob: `RUBRIC_OVERALL_PATH` (`Settings.rubric_overall_path`, default
@@ -316,8 +322,7 @@ A malformed rubric fails fast at load time rather than producing a wrong score.
 
 ## 8. Rule metadata drives the findings (why commentary is deterministic)
 
-*(This section is the durable half of the former `RUBRICS.md`;
-`commentary.py`, `content_plan.py`, `rubrics/seo.yaml` and `rubrics/uxui.yaml` point here.)*
+*(`commentary.py`, `content_plan.py`, `rubrics/seo.yaml` and `rubrics/uxui.yaml` point here.)*
 
 **The report's structure is data, not prose.** `content_plan.build_content_plan()` is the single
 source of truth for what a report says — which findings exist, their order, severity, remediation
@@ -359,6 +364,11 @@ Each `RubricRule` carries presentation metadata that never affects the score:
   `COMMENTARY_MAX_FINDINGS_PER_SECTION` is therefore the *only* truncation knob. (An earlier
   tier-first recommendation sort could push a long-term fix past the cap, printing a problem with
   no fix.)
+- **Teaser profile:** the plan above is always built and stored in full. With
+  `REPORT_PROFILE=teaser` the composed report drops every action item, recommendation, tier and
+  roadmap entry, rewords the "Start by checking" location labels, and removes the executive
+  summary's closing advice; findings (title, severity, what it means, why it matters, where it
+  was found) are unchanged. See `apps/worker/stages/report_profile.py`.
 
 ### Rules that must not change
 
@@ -383,6 +393,10 @@ Each `RubricRule` carries presentation metadata that never affects the score:
 ---
 
 ## 9. The GSC "ranking opportunity" forecast — how to defend the number
+
+> **Not in this edition:** with `SEARCH_CONSOLE_ENABLED=false` (the Rick edition) Google is never
+> called, so this forecast is never produced and the three `seo.gsc.*` rules (weights 6/5/6)
+> always skip; they stay in `score_breakdown` but are left out of the report's rule lists.
 
 The report's biggest claim is a traffic projection, so the model is deliberately conservative and
 every input is stored as a fact. Built by `_opportunity_estimate` in `google_search_console.py`; it

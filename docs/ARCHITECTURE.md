@@ -10,8 +10,8 @@ for scoring detail see [RUBRICS.md](RUBRICS.md). (Any `*.mmd` diagrams are local
 ## 1. High-level shape
 
 ```text
-Next.js Operator UI (apps/frontend)
-        |  HTTP / JSON (Clerk Bearer token / __session cookie)
+Next.js UI (apps/frontend)
+        |  HTTP / JSON (Clerk Bearer token / __session cookie; no token in the public build)
         v
 FastAPI Backend (apps/api)  ───────────────►  PostgreSQL
         |  enqueue                              (audit_jobs, audit_results,
@@ -22,7 +22,7 @@ Redis broker ──► Celery Worker (apps/worker)  ─────────�
               Pipeline stages (apps/worker/stages):
               crawler → psi_client → extractor_seo / extractor_uxui
               → external_seo → scoring → commentary → grounding_validator
-              → report_payload → pdf_renderer / docx_renderer
+              → report_payload (last step: report_profile) → pdf_renderer / docx_renderer
                       │
                       ▼
               Local report storage (storage/reports/*.pdf)
@@ -31,19 +31,29 @@ Redis broker ──► Celery Worker (apps/worker)  ─────────�
 The design separates **product risk** (crawl / score / commentary / PDF quality)
 from **infrastructure risk** (hosting), so the local app is proven before any
 production hosting work. Later work extended this spine without rewriting it (see
-[`PRODUCT.md`](PRODUCT.md) and
-[`ARCHITECTURE.md`](ARCHITECTURE.md)).
+[`PRODUCT.md`](PRODUCT.md)).
 
 **Three audit types share this spine.** A job's `audit_type` (`website` | `social` |
 `combined`) selects what runs: a **website** audit is the SEO + UX/UI pipeline above; a
 **standalone social** audit runs only the social provider/score/PDF path
-(`apps/worker/stages/social/`); and a **combined** audit — created when an operator adds
-social links to the Website Audit form, or by auto-promotion when the crawled site links its own
+(`apps/worker/stages/social/`); and a **combined** audit — created when social links are added
+to the Website Audit form, or by auto-promotion when the crawled site links its own
 profiles (credential-gated discovery; promoted **only when the social collection succeeds**) —
 runs the **untouched** website pipeline first, then
 appends a social section and an **Overall Lead-Gen Readiness** score to produce **one report**
 (PDF *and* DOCX). The combined flow is the headline feature; see §6.1. The website
 pipeline's scoring and report sections are byte-for-byte unchanged by it.
+
+### 1.1 Rick edition switches
+
+This repo is the Rick edition of `blc-social-audit`: the same pipeline and scores, plus three
+settings (all in `apps/shared/config.py`; code defaults reproduce the parent app):
+
+| Setting | Code default | This edition | Effect |
+|---|---|---|---|
+| `REPORT_PROFILE` | `full` | `teaser` | `teaser` strips every fix from every report surface and adds a booking call-to-action (`BOOKING_URL`, `BOOKING_CTA_LABEL`); see §5 |
+| `PUBLIC_AUDITS_ENABLED` (+ `NEXT_PUBLIC_PUBLIC_AUDITS_ENABLED` for the UI build) | `false` | `true` | Visitors create and read audits without signing in; operator endpoints stay gated; see §5 and §7 |
+| `SEARCH_CONSOLE_ENABLED` | `true` | `false` | No Google calls, no `/google/search-console` routes, no Search Console blocks in any report |
 
 ---
 
@@ -51,12 +61,12 @@ pipeline's scoring and report sections are byte-for-byte unchanged by it.
 
 | Component | Module | Responsibility |
 |---|---|---|
-| Operator UI | `apps/frontend` | Submit URL, poll progress, list audits, download PDF (Clerk-gated) |
-| API | `apps/api/routes/audits.py` | Create jobs, status/detail reads, report/DOCX download, list, rerun-enrichment, rerun-ai-visibility, share-link mint/revoke |
+| UI | `apps/frontend` | Submit URL, poll progress, read the report, download PDF/DOCX. Clerk-gated by default; the public build (`NEXT_PUBLIC_PUBLIC_AUDITS_ENABLED`, `lib/auth.ts`) renders without Clerk and hides the operator extras (history, share, reruns, white-label) |
+| API | `apps/api/routes/audits.py` | `visitor_router` (create, status/detail, PDF/DOCX download) and the operator `router` (list, rerun-enrichment, rerun-ai-visibility, share-link mint/revoke) |
 | Public share | `apps/api/routes/shared.py` | **Unauthenticated**, token-gated report payload + PDF (`/shared/{token}`) |
 | Metrics | `apps/api/routes/metrics.py` | Clerk-gated `GET /metrics` (audit counts, throughput, storage) |
-| Google routes | `apps/api/routes/google.py` | GSC OAuth connect / callback / properties |
-| Auth | `apps/api/auth.py` | `require_user()` — Clerk JWT verification (opt-in via `CLERK_ISSUER`) |
+| Google routes | `apps/api/routes/google.py` | GSC OAuth connect / callback / properties; mounted only when `SEARCH_CONSOLE_ENABLED` |
+| Auth | `apps/api/auth.py` | `require_user()` — Clerk JWT verification (opt-in via `CLERK_ISSUER`) for operator endpoints; `require_visitor()` — open when `PUBLIC_AUDITS_ENABLED`, else defers to `require_user()` |
 | API health | `apps/api/routes/health.py` | `GET /health` |
 | App + CORS | `apps/api/main.py` | `create_app()` factory: CORS, routers, Swagger redirect; docs/OpenAPI off when `APP_ENV=production` |
 | Settings | `apps/shared/config.py` | Env-driven `Settings` (single source of config) |
@@ -69,17 +79,18 @@ pipeline's scoring and report sections are byte-for-byte unchanged by it.
 | Crawler | `apps/worker/stages/crawler.py` | Playwright render, link discovery, robots, SSRF guards |
 | PageSpeed | `apps/worker/stages/psi_client.py` | PSI mobile/desktop collection, retries, cache, graceful skip |
 | Extractors | `extractor_seo.py`, `extractor_uxui.py` | Deterministic SEO / UX facts |
-| External SEO | `external_seo.py`, `site_health.py`, `screaming_frog.py`, `google_search_console.py` | Technical-crawl sweep (+ optional Screaming Frog CLI) and GSC facts; always degrades gracefully |
+| External SEO | `external_seo.py`, `site_health.py`, `screaming_frog.py`, `google_search_console.py` | Technical-crawl sweep (+ optional Screaming Frog CLI) and GSC facts (skipped with reason `disabled` when `SEARCH_CONSOLE_ENABLED=false`); always degrades gracefully |
 | Scoring | `apps/worker/stages/scoring.py` | YAML rubric engine → SEO/UX/Lead-Gen scores |
-| Commentary | `apps/worker/stages/commentary.py`, `content_plan.py` | Deterministic content plan; LLM polish is dormant scaffolding |
+| Commentary | `apps/worker/stages/commentary.py`, `content_plan.py` | Deterministic content plan; the website LLM polish is dormant scaffolding (the standalone-social polish is live — §5) |
 | Grounding | `apps/worker/stages/grounding_validator.py` | Strip unsupported numeric claims |
-| Report payload | `apps/worker/stages/report_payload.py` | Compose the report data model |
+| Report payload | `apps/worker/stages/report_payload.py` | Compose the report data model; its last step applies the report profile |
+| Report profile | `apps/worker/stages/report_profile.py` | `apply_report_profile` / `apply_social_report_profile`, the last step of both composers: in `teaser` mode strips every fix and adds the booking call-to-action (§5) |
 | Branding | `apps/worker/stages/report_branding.py` | BLC brand config + placeholder fallback |
 | PDF renderer | `apps/worker/stages/pdf_renderer.py` | WeasyPrint/Jinja2 branded PDF → `storage/reports/` |
 | DOCX renderer | `apps/worker/stages/docx_renderer.py` | Hand-written OOXML DOCX (failure never aborts the audit) |
 
 **Versioned assets** (tunable without code): `rubrics/*.yaml`, `prompts/*.md`,
-`templates/report.html` + `report.css`, `brand/blc.yaml`. See
+`templates/report.html` + `report.css`, `templates/social_report.html`, `brand/blc.yaml`. See
 [`RUBRICS.md`](RUBRICS.md) for rubric structure and tuning.
 
 ---
@@ -101,7 +112,7 @@ queued → crawling → collecting_performance → extracting → scoring
 15  crawling
 45  collecting_performance (PSI)
 70  extracting (SEO + UX/UI)
-76  extracting (external SEO — technical-crawl sweep + GSC)
+76  extracting (external SEO — technical-crawl sweep, + GSC when SEARCH_CONSOLE_ENABLED)
 80  scoring
 88  commenting
 95  validating
@@ -154,7 +165,7 @@ the flag is on.
 
 | Table | Key fields |
 |---|---|
-| `audit_jobs` | `id`, `url`, `niche`, `target_audience`, `status`, `current_stage`, `progress_pct`, `error_message`, `audit_type` (free `String(20)`: `website`/`social`/`combined`), `social_handles` (JSON), timestamps |
+| `audit_jobs` | `id`, `url`, `niche`, `target_audience`, `status`, `current_stage`, `progress_pct`, `error_message`, `audit_type` (free `String(20)`: `website`/`social`/`combined`), `social_handles` (JSON), `brand_overrides` (JSON), `share_token` + `share_expires_at`, timestamps |
 | `audit_results` | `job_id` (1:1, CASCADE, unique), `seo_score`, `uxui_score`, `lead_gen_score` (all NULLABLE — empty for a social audit), `social_score`, plus JSON blobs: `crawled_pages`, `seo_facts`, `uxui_facts`, `psi_facts`, `external_seo_facts`, `social_facts`, `accessibility_facts` (advisory axe-core findings; nullable, never scored), `score_breakdown`, `commentary`, `validation_log`, `report_metadata`, `pdf_path`, `rubric_version`, `llm_model` |
 | `google_search_console_connections` | Standalone (no FK to jobs/results), keyed by unique `account_email`; stores Google OAuth tokens (`access_token`, `refresh_token`, `token_expires_at`), `scopes` (JSON), `properties` (JSON), timestamps |
 
@@ -169,7 +180,7 @@ JSON columns use PostgreSQL `JSONB` in production and portable `JSON` elsewhere;
 `GUID` type decorator maps to Postgres UUID or `CHAR(36)`. This portability is what
 lets the hermetic QA harness run on SQLite. Migrations live in `migrations/`
 (`alembic upgrade head`; head = `20260625_0005`, which adds the advisory
-`accessibility_facts` column — see CLAUDE.md §6 for the full additive chain); the
+`accessibility_facts` column — see `migrations/versions/` for the full additive chain); the
 Compose `api` service runs them on start. Alembic targets PostgreSQL only (`CREATE EXTENSION pgcrypto`,
 `JSONB`); SQLite tables are created via `Base.metadata.create_all` in tests/QA, never
 via Alembic.
@@ -202,7 +213,8 @@ the website composite — see §6).
   of a **standalone** social audit (prompts `commentary_social_*.md`; grounded, falls back to the
   deterministic text on any failure), and `ai_visibility/vision.py` reads the Semrush dashboard
   screenshot when AI Visibility is enabled. In both, rules produce numbers and the LLM only
-  produces prose or reads a picture — never invert this.
+  produces prose or reads a picture — never invert this. In `teaser` mode the social polish still
+  runs and is stored, but the report shows the deterministic summary and no narratives.
 - **Grounded commentary.** Numeric claims in commentary are checked against the
   extracted facts; unsupported claims are stripped (`grounding_validator.py`). Timeframe
   phrases ("1–3 months") are masked first so they survive, and if stripping would empty a
@@ -216,16 +228,31 @@ the website composite — see §6).
   data never abort an audit — they downgrade to fallbacks or skipped rules. Only
   `status == "complete"` external-SEO summaries are scored; non-complete sources have
   their summary stripped before scoring (`scoring._trusted_external_seo_facts`).
-- **Config is environment-only.** All settings come from environment variables
-  (`apps/shared/config.py`, documented in `.env.template`).
-- **Authentication is Clerk, opt-in by env.** `apps/api/auth.py` `require_user()`
-  verifies a Clerk RS256 JWT (from the `Authorization: Bearer` header or the `__session`
-  cookie) against the issuer's JWKS. It is **opt-in**: if `CLERK_ISSUER` is empty,
-  `require_user()` returns `None` and the API is open — exactly how local dev, the QA
-  harness, and tests run unauthenticated. Production sets `CLERK_ISSUER` (with a
-  fail-fast guard); the whole `/audits/*` router is gated, as are the Google routes
-  except the unauthenticated GSC OAuth callback (protected instead by an HMAC-signed,
-  time-limited CSRF state). An optional `clerk_allowed_subjects` allowlist further restricts
+- **Config is environment-driven.** Settings come from environment variables and `./.env`
+  (`apps/shared/config.py`, every field documented in `.env.template` — a test enforces it).
+- **The report profile is a rendering mode, applied in one place.** `report_profile.py` runs as
+  the last step of `compose_report_payload` and `compose_social_report_payload`, so the PDF, DOCX,
+  API detail JSON, share link and UI read the same payload. In `teaser` mode it strips findings'
+  action items, tiers and "Start by checking" labels, recommendations, the roadmap, technical-SEO
+  `recommended_fix`, axe `help_url`/`failure_summary`, social remediation/narratives/roadmap (and an
+  LLM social summary), the executive-summary closing advice, and an AI Visibility block that
+  could not collect; it adds `cta`. Scoring, stored facts and stored commentary are untouched, so
+  remediation stays in the database and `full` restores every fix on the next render. The worker
+  renders the PDF (and the DOCX at completion) and the API composes the JSON per request, so both
+  processes must run with the same `REPORT_PROFILE`; files already generated are not re-rendered
+  when it changes.
+- **Authentication is Clerk, opt-in by env; visitors can be anonymous.** `apps/api/auth.py`
+  `require_user()` verifies a Clerk RS256 JWT (from the `Authorization: Bearer` header or the
+  `__session` cookie) against the issuer's JWKS and guards the operator endpoints (history,
+  reruns, share mint/revoke, `/metrics`, the Google routes except the unauthenticated GSC OAuth
+  callback, which an HMAC-signed, time-limited CSRF state protects instead). It is **opt-in**: if
+  `CLERK_ISSUER` is empty it returns `None` and those endpoints are open — how local dev, the QA
+  harness and tests run — **except** with `PUBLIC_AUDITS_ENABLED` and any `APP_ENV` other than
+  `local`/`dev`/`development`/`test`, where it answers 403 so operator endpoints never fall open on
+  a public deployment. `require_visitor()`
+  guards the visitor endpoints (create, status, detail, PDF, DOCX): open to anyone when
+  `PUBLIC_AUDITS_ENABLED` (the unguessable job UUID is the only key to a report, like a share
+  link), otherwise it defers to `require_user()`. An optional `clerk_allowed_subjects` allowlist further restricts
   which Clerk user IDs may call the API, and the `azp` (authorized-party) check is hardened so a
   token that simply omits the claim no longer slips past.
 - **Reports are stored on the local filesystem** under `storage/reports/` (object storage
@@ -250,7 +277,7 @@ the website composite — see §6).
     (`accessibility.py`, `accessibility_advisory_enabled`, default off) runs in the live crawl
     browser and stores render-dependent findings (colour contrast, computed ARIA, …) in the
     `accessibility_facts` column, rendered as an advisory report section. It is **never passed to
-    `score_audit`** — scores are byte-for-byte identical whether it ran or not (CLAUDE.md §5).
+    `score_audit`** — scores are byte-for-byte identical whether it ran or not.
 - Each rule has a `weight`, a `fact_path`, and an `evaluator`
   (`boolean`, `presence`, `range`, `exact_match`, `threshold`, `linear_scale`),
   optionally `skip_if_missing` (used for PSI rules with `linear_scale` so a missing API
@@ -291,32 +318,41 @@ drops out). Half-up rounding, like the rest of the engine. The result is stored 
 
 ## 7. API surface
 
-| Endpoint | Purpose |
-|---|---|
-| `GET /health` | Liveness |
-| `GET /metrics` | Clerk-gated operational metrics (audit counts by status, 24h throughput, in-flight/oldest, storage usage) |
-| `GET /` | 307 redirect → `/docs` (404 in production, where the docs are off) |
-| `POST /audits` | Create + enqueue an audit job (201). `audit_type` ∈ `website`/`social`/`combined`; a combined audit requires **both** `url` and ≥1 social handle |
-| `GET /audits` | List recent audits (`limit` 1–100, default 25; `offset`). Rows expose `audit_type` + a combined-only `overall_score` |
-| `GET /audits/{job_id}` | Audit detail + composed report payload (a combined audit uses the website payload, which carries the appended sections); exposes `audit_type` + `overall_score` |
-| `GET /audits/{job_id}/status` | Progress (stage, percentage, report availability) |
-| `POST /audits/{job_id}/rerun-enrichment` | Re-run external SEO → rescore/recomment/re-render (404 no job / 409 no result / 503 enqueue fail) |
-| `POST /audits/{job_id}/rerun-ai-visibility` | Re-run only the Semrush AI-visibility step → re-render (409 while `AI_VISIBILITY_ENABLED` is off, checked first / 404 no job / 409 no result / 503 enqueue fail) |
-| `GET /audits/{job_id}/report` | Download the generated PDF |
-| `GET /audits/{job_id}/docx` | Download the DOCX (rendered on demand if absent — this GET writes the file and commits its path) |
-| `POST /audits/{job_id}/share` | Mint a random, time-limited share token (`SHARE_LINK_TTL_DAYS`; 409 if no report yet) |
-| `DELETE /audits/{job_id}/share` | Revoke the share token |
-| `GET /shared/{token}` | **Unauthenticated**, token-gated report payload (404 missing/revoked, 410 expired) |
-| `GET /shared/{token}/report` | **Unauthenticated**, token-gated PDF download |
-| `GET /google/search-console/connect` | Start GSC OAuth |
-| `GET /google/search-console/connect-url` | Return the GSC OAuth URL |
-| `GET /google/search-console/callback` | GSC OAuth callback (**unauthenticated**; protected by an HMAC-signed CSRF state) |
-| `GET /google/search-console/properties` | List connected GSC properties |
-| `GET /docs`, `GET /redoc`, `GET /openapi.json` | Interactive API docs — **disabled when `APP_ENV=production`** (they would be public via Caddy's `/api/*`) |
+| Endpoint | Purpose | Access |
+|---|---|---|
+| `GET /health` | Liveness | public |
+| `GET /metrics` | Operational metrics (audit counts by status, 24h throughput, in-flight/oldest, storage usage) | operator |
+| `GET /` | 307 redirect → `/docs` (404 in production, where the docs are off) | public |
+| `POST /audits` | Create + enqueue an audit job (201). `audit_type` ∈ `website`/`social`/`combined`; a combined audit requires **both** `url` and ≥1 social handle. In public mode `brand_overrides` is ignored and a social-only audit is refused (422) | visitor |
+| `GET /audits` | List recent audits (`limit` 1–100, default 25; `offset`). Rows expose `audit_type` + a combined-only `overall_score` | operator |
+| `GET /audits/{job_id}` | Audit detail + composed report payload, shaped by the report profile (a combined audit uses the website payload, which carries the appended sections); exposes `audit_type` + `overall_score` | visitor |
+| `GET /audits/{job_id}/status` | Progress (stage, percentage, report availability) | visitor |
+| `POST /audits/{job_id}/rerun-enrichment` | Re-run external SEO → rescore/recomment/re-render (404 no job / 409 no result / 503 enqueue fail) | operator |
+| `POST /audits/{job_id}/rerun-ai-visibility` | Re-run only the Semrush AI-visibility step → re-render (409 while `AI_VISIBILITY_ENABLED` is off, checked first / 404 no job / 409 no result / 503 enqueue fail) | operator |
+| `GET /audits/{job_id}/report` | Download the generated PDF | visitor |
+| `GET /audits/{job_id}/docx` | Download the DOCX (rendered on demand if absent — this GET writes the file and commits its path, including for an anonymous visitor in public mode) | visitor |
+| `POST /audits/{job_id}/share` | Mint a random, time-limited share token (`SHARE_LINK_TTL_DAYS`; 409 if no report yet) | operator |
+| `DELETE /audits/{job_id}/share` | Revoke the share token | operator |
+| `GET /shared/{token}` | Token-gated report payload, shaped by the report profile (404 missing/revoked, 410 expired) | public |
+| `GET /shared/{token}/report` | Token-gated PDF download | public |
+| `GET /google/search-console/connect` | Start GSC OAuth | operator; only when `SEARCH_CONSOLE_ENABLED` |
+| `GET /google/search-console/connect-url` | Return the GSC OAuth URL | operator; only when `SEARCH_CONSOLE_ENABLED` |
+| `GET /google/search-console/callback` | GSC OAuth callback (protected by an HMAC-signed CSRF state) | public; only when `SEARCH_CONSOLE_ENABLED` |
+| `GET /google/search-console/properties` | List connected GSC properties | operator; only when `SEARCH_CONSOLE_ENABLED` |
+| `GET /docs`, `GET /redoc`, `GET /openapi.json` | Interactive API docs — **disabled when `APP_ENV=production`** (they would be public via Caddy's `/api/*`) | public |
 
-`compose_report_payload(job, result)` (`apps/worker/stages/report_payload.py`,
-`REPORT_PAYLOAD_VERSION` `phase1-report-v3`) is **pure** and imported by both the worker
-(to render) and the API (to build the detail response) — keep it pure. `ReportPayload` gained
+**Access:** *visitor* = `require_visitor` (open to anyone when `PUBLIC_AUDITS_ENABLED`, otherwise
+Clerk); *operator* = `require_user` (Clerk when `CLERK_ISSUER` is set; open when it is empty, except
+403 with `PUBLIC_AUDITS_ENABLED` and any `APP_ENV` but local/dev/test); *public* = never gated.
+
+`compose_report_payload(job, result, *, settings=None)` (`apps/worker/stages/report_payload.py`,
+`REPORT_PAYLOAD_VERSION` `phase1-report-v3`) has no I/O and is deterministic for a given
+(job, result, settings); it is imported by both the worker (to render) and the API (to build the
+detail and share responses), which call it without `settings`, so the process's own settings
+(`REPORT_PROFILE`, `SEARCH_CONSOLE_ENABLED`) apply. Keep it free of I/O. The edition added three
+fields: `report_profile` (`full`/`teaser`), `cta` (the booking call-to-action, teaser only) and
+`show_search_console` (read by the PDF, DOCX and UI to hide every Search Console block; the
+`seo.gsc.*` rules are also left out of reader-facing rule lists). `ReportPayload` also carries
 two **optional** fields, `social_audit` and `overall_readiness` (both default `None` ⇒ not
 rendered ⇒ a website-only report stays byte-identical); `compose_report_payload` populates them
 from `result.social_facts` + `score_breakdown` for a combined audit, reusing the shared
@@ -325,18 +361,18 @@ deterministic builder `social/report.py::build_social_report_data` (refactored o
 share one builder). The PDF template (`templates/report.html`) appends the two sections — TOC
 entries + sections — at the **end**, skew-proof-guarded via `payload.get('social_audit')` /
 `get('overall_readiness')`; `docx_renderer.py` appends the same via a new `_combined_xml()`
-helper, so the on-demand DOCX matches the PDF. The standalone Social audit keeps its own pure
-seam, `social/report.py::compose_social_report_payload` (`SOCIAL_REPORT_VERSION`
-`phase2-social-report-v1`).
+helper, so the on-demand DOCX matches the PDF. The standalone Social audit has its own seam in
+`social/report.py` (`SOCIAL_REPORT_VERSION` `phase2-social-report-v1`):
+`compose_social_report_data` builds the complete report (every fix included — the worker's
+commentary step reads it, so stored data never depends on the profile), and
+`compose_social_report_payload` applies the report profile on top; every surface uses the latter.
 
-**Authentication is Clerk, opt-in by env** (see §5 and `apps/api/auth.py`). When
-`CLERK_ISSUER` is set, the whole `/audits/*` router, `/metrics`, and the Google routes (except the
-unauthenticated GSC callback) require a verified Clerk JWT; the optional `CLERK_ALLOWED_SUBJECTS`
-allowlist then answers 403 for any other user. `/health` and the token-gated `/shared/*` routes
-are deliberately public. When `CLERK_ISSUER` is empty
-the API is open — local dev, the QA harness, and tests run this way. Clerk is currently a
-**dev** instance and open sign-up is a known gap (invitation is a manual operator step);
-see [`LIMITATIONS.md`](LIMITATIONS.md). CORS has a credential guard
+**Authentication** (see §5 and `apps/api/auth.py`): the Access column above. When
+`CLERK_ISSUER` is set, operator endpoints require a verified Clerk JWT and the optional
+`CLERK_ALLOWED_SUBJECTS` allowlist answers 403 for any other user; visitor endpoints require it
+too unless `PUBLIC_AUDITS_ENABLED`. This edition has no Clerk instance of its own: visitors never
+sign in, and without `CLERK_ISSUER` a public deployment closes the operator endpoints
+(403). CORS has a credential guard
 in `main.py`: if `*` is in `API_CORS_ORIGINS`, `allow_credentials` is forced off.
 
 **Operator UI (one form for combined audits).** The standalone Social Audit page
@@ -352,20 +388,33 @@ a **"Full"** badge and an Overall-score cell for combined rows; `lib/api.ts` gai
 URL) can no longer be created from the UI, but the backend `audit_type="social"` path still exists
 and past social audits still render in history/detail.
 
+**Public build** (`NEXT_PUBLIC_PUBLIC_AUDITS_ENABLED=true`, baked at build time): `_app.tsx`
+renders without `ClerkProvider`, `middleware.ts` passes every request through, and
+`lib/auth.ts::useApiToken` sends no token. The nav shows only "Website Audit" (the history page
+still exists by URL for local operators; on a public deployment its API answers
+403); the user menu, the rerun/refresh/share buttons, the internal QA tiles, the white-label
+panel and the Search Console widget are hidden; the detail page's back link returns to the
+submit form. In a teaser report the detail page shows `CtaBlock` after the executive summary
+and in place of the roadmap, and hides the Search Console blocks when `show_search_console`
+is false.
+
 **White-label logo SSRF vetting.** A remote `logo_url` brand override is SSRF-vetted
 (`report_branding._remote_logo_url_allowed`, mirroring the crawler's host checks) **before**
 WeasyPrint fetches it at render time, so it can't point the server-side fetch at an internal host.
+In public mode `brand_overrides` is ignored entirely, so visitors cannot white-label a report.
 
 ---
 
 ## 8. Tests & verification
 
-Unit tests in `tests/unit/` (~490 tests) run on every commit (pre-commit + CI), and the QA
+Unit tests in `tests/unit/` (~521 tests) run on every commit (pre-commit + CI), and the QA
 harness passes 11/11. `tests/integration/` exists but is empty (`.gitkeep` only).
 `tests/conftest.py` makes the suite hermetic: it switches off `.env` loading for every
-`Settings()` in the session and pins every credential / external toggle empty, so a developer's
-real keys can never turn a test run into paid OpenAI/Apify/Places calls, a Semrush login, or a
-Sentry report. Highlights:
+`Settings()` in the session and pins the credentials and paid / external-side-effect toggles,
+so a developer's real keys can never turn a test run into paid OpenAI/Apify/Places calls, a
+Semrush login, or a Sentry report. Unit tests therefore run with the code defaults (`full`
+profile, not public, Search Console on); edition behaviour is tested with explicit settings.
+Highlights:
 
 - `test_scoring_engine.py` — rubric validation, calibration (strong ≥ / weak ≤), reproducibility.
 - `test_extractors.py` — strong/weak/malformed fixtures vs expected JSON.
@@ -375,13 +424,16 @@ Sentry report. Highlights:
 - `test_external_seo`-family: `test_site_health.py`, `test_screaming_frog.py`, `test_google_search_console.py` — technical-crawl sweep, Screaming Frog adapter, GSC facts.
 - `test_report_payload.py`, `test_pdf_renderer.py`, `test_docx_renderer.py` — report composition, pagination edges, DOCX rendering.
 - `test_audit_api.py`, `test_audit_lifecycle.py`, `test_worker_collection.py`, `test_time_budget.py`, `test_qa_harness.py` — API + persistence + full worker artifacts + harness.
-- Social + combined: the `social/` suite (extractor, scoring, worker branch, providers/registry, typed schema) plus the combined flow (`_augment_with_social`, Overall Lead-Gen Readiness, appended report sections), and `test_audit_states.py` — a tripwire that keeps the `audit_jobs.status` CHECK constraint, the model, and `JOB_STATUS_VALUES` in sync.
+- Rick edition: `test_report_profile.py` (leak tests built from the source of every fix — rubric remediation, action titles, technical fixes, summary advice — across the payload, PDF, DOCX, API detail and share-link JSON), `test_public_audits.py` (visitor vs operator access, the production 403, no white-label), `test_search_console_toggle.py`, and `test_env_template.py` (every setting documented).
+- Social + combined: the `test_social_*.py` / `test_extractor_social.py` / `test_worker_social.py` suite (extractor, scoring, worker branch, providers/registry, typed schema) plus the combined flow (`_augment_with_social`, Overall Lead-Gen Readiness, appended report sections), and `test_audit_states.py` — a tripwire that keeps the `audit_jobs.status` CHECK constraint, the model, and `JOB_STATUS_VALUES` in sync.
 
 The hermetic QA harness (`scripts/qa_common.py`, `scripts/qa_e2e.py`,
 `scripts/qa_reproducibility.py`, `make qa` / `make qa-repro`) runs the real pipeline
 end-to-end on ephemeral SQLite with no PostgreSQL, Docker, or paid API keys required
 (PSI / OpenAI / Screaming Frog / GSC / site-health are all forced onto their skip paths).
-It is operator-run, not wired into CI.
+It is operator-run, not wired into CI. It does not pin `REPORT_PROFILE` or
+`SEARCH_CONSOLE_ENABLED`, so it renders whatever `.env` sets (the teaser, in this edition); set
+`REPORT_PROFILE=full` in the environment to exercise the full report.
 
 For setup/run instructions see [`SETUP.md`](SETUP.md); to
 operate the tool see [`OPERATOR_GUIDE.md`](OPERATOR_GUIDE.md).
@@ -390,16 +442,18 @@ operate the tool see [`OPERATOR_GUIDE.md`](OPERATOR_GUIDE.md).
 
 ## 9. Deployment
 
-This app runs **live in production**. For the authoritative deployment topology — the
-single Linode VM, the `docker-compose.prod.yml` six-service stack (postgres, redis, api,
-worker, frontend, caddy), Caddy TLS + single-origin reverse proxy, and the
-PR → pre-commit → merge → SSH deploy CI/CD flow — see
-[`DEPLOYMENT.md`](../DEPLOYMENT.md). `alembic upgrade head` runs automatically on the
-`api` container start. The Dockerfiles now install **pinned** dependencies from
+This edition is **not deployed yet**. Its deploy workflow is manual-only and hard-disabled (it
+reads `RICK_DEPLOY_*` secrets), `deploy/deploy.sh` exits immediately, the compose project is
+`blc-rick-seo-agent`, and the domain is the placeholder `blc-rick-seo-agent.invalid`.
+`docker-compose.prod.yml` pins this edition's switches (`REPORT_PROFILE=teaser`,
+`PUBLIC_AUDITS_ENABLED`, `SEARCH_CONSOLE_ENABLED=false`) on both api and worker and builds the
+public UI (no Clerk keys needed). The deployment plan and its open items are in
+[`DEPLOYMENT.md`](../DEPLOYMENT.md). `alembic upgrade head` runs automatically on the `api`
+container start. The Dockerfiles now install **pinned** dependencies from
 `requirements.txt` first, then the package itself with `--no-deps -e .`, for reproducible image
 builds. (GSC OAuth tokens are stored plaintext — a documented accepted risk on the single
 internal VM; see [`LIMITATIONS.md`](LIMITATIONS.md).)
 
 ---
 
-*Last reconciled with the code: 2026-06-26 (combined audit + security hardening pass).*
+*Last reconciled with the code: 2026-09-28 (Rick edition: report profile, public audits, Search Console switch).*
