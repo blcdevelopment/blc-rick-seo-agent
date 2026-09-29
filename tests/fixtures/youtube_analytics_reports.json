@@ -1,0 +1,28 @@
+{
+  "engagement": {
+    "columnHeaders": [
+      {"name": "views", "columnType": "METRIC", "dataType": "INTEGER"},
+      {"name": "estimatedMinutesWatched", "columnType": "METRIC", "dataType": "INTEGER"},
+      {"name": "averageViewDuration", "columnType": "METRIC", "dataType": "INTEGER"},
+      {"name": "averageViewPercentage", "columnType": "METRIC", "dataType": "FLOAT"},
+      {"name": "subscribersGained", "columnType": "METRIC", "dataType": "INTEGER"},
+      {"name": "subscribersLost", "columnType": "METRIC", "dataType": "INTEGER"}
+    ],
+    "rows": [[15234, 48210, 190, 42.7, 320, 45]]
+  },
+  "traffic": {
+    "columnHeaders": [
+      {"name": "insightTrafficSourceType", "columnType": "DIMENSION", "dataType": "STRING"},
+      {"name": "views", "columnType": "METRIC", "dataType": "INTEGER"}
+    ],
+    "rows": [["YT_SEARCH", 8200], ["SUGGESTED_VIDEO", 5100], ["EXTERNAL", 1934]]
+  },
+  "demographics": {
+    "columnHeaders": [
+      {"name": "ageGroup", "columnType": "DIMENSION", "dataType": "STRING"},
+      {"name": "gender", "columnType": "DIMENSION", "dataType": "STRING"},
+      {"name": "viewerPercentage", "columnType": "METRIC", "dataType": "FLOAT"}
+    ],
+    "rows": [["age25-34", "male", 31.4], ["age35-44", "male", 22.1], ["age25-34", "female", 12.8]]
+  }
+}

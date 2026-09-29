@@ -1,0 +1,52 @@
+{
+  "channel": {
+    "id": "UCacme1234567890abcdef",
+    "snippet": {
+      "title": "Acme Builders",
+      "description": "Custom home builders in Austin. Book a consult at https://acmebuilders.example for a free estimate.",
+      "customUrl": "@acmebuilders",
+      "publishedAt": "2019-02-01T00:00:00Z",
+      "thumbnails": {
+        "default": { "url": "https://yt3.example/avatar.jpg" },
+        "high": { "url": "https://yt3.example/avatar_hq.jpg" }
+      }
+    },
+    "statistics": {
+      "viewCount": "850000",
+      "subscriberCount": "5000",
+      "videoCount": "120"
+    },
+    "contentDetails": {
+      "relatedPlaylists": { "uploads": "UUacme1234567890abcdef" }
+    },
+    "brandingSettings": {
+      "image": { "bannerExternalUrl": "https://yt3.example/banner.jpg" }
+    }
+  },
+  "videos": [
+    {
+      "snippet": { "title": "Modern kitchen remodel tour", "publishedAt": "2026-06-03T00:00:00Z" },
+      "statistics": { "viewCount": "8200", "likeCount": "220", "commentCount": "30" }
+    },
+    {
+      "snippet": { "title": "Choosing the right contractor", "publishedAt": "2026-06-06T00:00:00Z" },
+      "statistics": { "viewCount": "7600", "likeCount": "220", "commentCount": "30" }
+    },
+    {
+      "snippet": { "title": "Bathroom renovation timelapse", "publishedAt": "2026-06-09T00:00:00Z" },
+      "statistics": { "viewCount": "9100", "likeCount": "220", "commentCount": "30" }
+    },
+    {
+      "snippet": { "title": "Custom deck build", "publishedAt": "2026-06-12T00:00:00Z" },
+      "statistics": { "viewCount": "6800", "likeCount": "220", "commentCount": "30" }
+    },
+    {
+      "snippet": { "title": "Client home reveal", "publishedAt": "2026-06-15T00:00:00Z" },
+      "statistics": { "viewCount": "10400", "likeCount": "220", "commentCount": "30" }
+    },
+    {
+      "snippet": { "title": "Financing your build", "publishedAt": "2026-06-21T00:00:00Z" },
+      "statistics": { "viewCount": "7300", "likeCount": "220", "commentCount": "30" }
+    }
+  ]
+}

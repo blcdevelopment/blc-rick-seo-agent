@@ -1,0 +1,54 @@
+{
+  "seo": {
+    "summary": {
+      "titles_present_pct": 100.0,
+      "meta_descriptions_present_pct": 0.0,
+      "h1_present_pct": 0.0,
+      "pages_with_schema": 0,
+      "pages_with_organization_schema": 0,
+      "pages_with_invalid_json_ld": 0,
+      "has_local_business_schema": false,
+      "has_breadcrumb_schema": false,
+      "image_alt_coverage_pct": 0.0,
+      "noindex_pages": 0,
+      "all_pages_https": true,
+      "pages_with_mixed_content": 1,
+      "all_pages_heading_hierarchy_ok": false,
+      "total_question_headings": 0,
+      "has_extractable_structure": false,
+      "has_complete_nap_schema": false,
+      "has_service_area_markup": false,
+      "has_map_or_gbp_link": false,
+      "has_visible_address": false,
+      "all_pages_have_lang": false,
+      "all_pages_have_main_landmark": false,
+      "viewport_allows_zoom": null,
+      "total_positive_tabindex": 0,
+      "unlabeled_form_controls": null,
+      "empty_links": 0,
+      "empty_buttons": null,
+      "duplicate_referenced_ids": null
+    },
+    "page": {
+      "h1_count": 0,
+      "internal_links": 1,
+      "empty_or_non_http_links": 1,
+      "missing_image_alts": 2
+    }
+  },
+  "uxui": {
+    "summary": {
+      "total_ctas": 0,
+      "pages_with_primary_cta": 0,
+      "total_forms": 0,
+      "pages_with_phone": 0,
+      "pages_with_email": 0,
+      "pages_with_trust_signals": 0
+    },
+    "page": {
+      "has_form": false,
+      "has_direct_contact": false,
+      "has_nav": false
+    }
+  }
+}

@@ -1,3 +1,9 @@
+# --- Local SEO audit artifacts (out of scope, not for version control) ---
+# Folder is literally named "seo_audits " (trailing space); glob handles it.
+seo_audits*/
+*.pptx
+storage/tool_exports/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -149,6 +155,8 @@ activemq-data/
 
 # Environments
 .env
+.env.local
+.env.*.local
 .envrc
 .venv
 env/
@@ -195,13 +203,17 @@ cython_debug/
 .abstra/
 
 # Visual Studio Code
-#   Visual Studio Code specific template is maintained in a separate VisualStudioCode.gitignore 
+#   Visual Studio Code specific template is maintained in a separate VisualStudioCode.gitignore
 #   that can be found at https://github.com/github/gitignore/blob/main/Global/VisualStudioCode.gitignore
-#   and can be added to the global gitignore or merged into this file. However, if you prefer, 
+#   and can be added to the global gitignore or merged into this file. However, if you prefer,
 #   you could uncomment the following to ignore the entire vscode folder
 # .vscode/
 # Temporary file for partial code execution
 tempCodeRunnerFile.py
+.DS_Store
+
+# Local Mermaid diagram scratch files (architecture.mmd, audit-flow.mmd, etc.)
+*.mmd
 
 # Ruff stuff:
 .ruff_cache/
@@ -216,3 +228,24 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+*.docx
+*.pdf
+
+# Local Phase 1 generated artifacts
+storage/reports/*
+!storage/reports/.gitkeep
+storage/screenshots/*
+!storage/screenshots/.gitkeep
+# Semrush AI Visibility saved login session — contains cookies/auth tokens; NEVER commit.
+storage/semrush_session.json
+storage/backups/
+apps/frontend/.next/
+apps/frontend/node_modules/
+apps/frontend/tsconfig.tsbuildinfo
+
+# Frontend source overrides — the generic Python "lib/" rule above must not
+# swallow the operator UI's TypeScript source directory.
+!apps/frontend/lib/
+!apps/frontend/lib/**
+.claude/
+CLAUDE.md

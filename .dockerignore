@@ -1,0 +1,28 @@
+# Build context for the api + worker images (both `COPY . .`). The frontend image builds from
+# apps/frontend with its own .dockerignore. Patterns without **/ only match at the context root.
+
+# VCS, tooling and caches
+.git
+.github
+.venv
+**/__pycache__
+**/*.pyc
+**/*.pyo
+.pytest_cache
+.ruff_cache
+**/.DS_Store
+*.log
+
+# Frontend dependencies / build output (never needed by the Python images)
+**/node_modules
+apps/frontend/.next
+
+# Secrets and local-only state — must never be baked into an image layer
+**/.env*
+storage/reports/*
+storage/screenshots/*
+storage/tool_exports
+storage/backups
+storage/semrush_session.json
+.claude
+CLAUDE.md

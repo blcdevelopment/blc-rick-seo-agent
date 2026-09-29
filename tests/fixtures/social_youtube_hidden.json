@@ -1,0 +1,38 @@
+{
+  "channel": {
+    "id": "UChidden234567890abcdef",
+    "snippet": {
+      "title": "Hidden Stats Builders",
+      "description": "We build custom homes. Visit us online.",
+      "customUrl": "@hiddenco",
+      "publishedAt": "2020-05-01T00:00:00Z",
+      "thumbnails": { "default": { "url": "https://yt3.example/avatar.jpg" } }
+    },
+    "statistics": {
+      "viewCount": "120000",
+      "subscriberCount": "2000",
+      "videoCount": "40"
+    },
+    "contentDetails": {
+      "relatedPlaylists": { "uploads": "UUhidden234567890abcdef" }
+    }
+  },
+  "videos": [
+    {
+      "snippet": { "title": "Project tour", "publishedAt": "2026-06-05T00:00:00Z" },
+      "statistics": { "viewCount": "5200" }
+    },
+    {
+      "snippet": { "title": "Behind the build", "publishedAt": "2026-06-12T00:00:00Z" },
+      "statistics": { "viewCount": "4800" }
+    },
+    {
+      "snippet": { "title": "Final reveal", "publishedAt": "2026-06-18T00:00:00Z" },
+      "statistics": { "viewCount": "6100" }
+    },
+    {
+      "snippet": { "title": "Q&A", "publishedAt": "2026-06-22T00:00:00Z" },
+      "statistics": { "viewCount": "3900" }
+    }
+  ]
+}

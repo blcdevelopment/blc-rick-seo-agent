@@ -1,0 +1,157 @@
+# Production stack for the Rick edition (blc-rick-seo-agent). NOT DEPLOYED YET.
+#
+# `blc-rick-seo-agent.invalid` below is a placeholder on the reserved `.invalid`
+# TLD (it can never resolve); replace it with this edition's own subdomain once
+# provisioned. It must never be the parent's ai.builderleadconverter.com.
+#
+#   docker compose -f docker-compose.prod.yml build
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# Differences from the dev docker-compose.yml:
+#   * no repo bind-mounts / no --reload (code is baked into the images)
+#   * adds the Next.js frontend + a Caddy reverse proxy (auto-TLS)
+#   * only Caddy exposes ports (80/443); Postgres/Redis/API stay on the internal network
+#   * worker runs at --concurrency=1 (one Chromium at a time) for the 4 GB box
+#   * secrets come from .env (gitignored); never commit it
+
+# Explicit project name, so this stack's containers and volumes (postgres_data,
+# storage, ...) can never resolve to the parent's `blc-social-audit` project,
+# whose name comes from its checkout directory.
+name: blc-rick-seo-agent
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-blc_website_audit}
+      POSTGRES_USER: ${POSTGRES_USER:-blc}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-blc} -d ${POSTGRES_DB:-blc_website_audit}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    env_file:
+      - .env
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-blc}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-blc_website_audit}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      AUDIT_ENQUEUE_ENABLED: "true"
+      LOCAL_REPORT_STORAGE_DIR: /app/storage/reports
+      LOCAL_SCREENSHOT_STORAGE_DIR: /app/storage/screenshots
+      # This edition's switches, pinned here for BOTH api and worker so the PDF (worker) and
+      # the JSON/DOCX (api) can never be rendered with different settings.
+      REPORT_PROFILE: teaser
+      PUBLIC_AUDITS_ENABLED: "true"
+      SEARCH_CONSOLE_ENABLED: "false"
+      # Same-origin in prod (UI + /api on one domain), but keep CORS correct anyway.
+      API_CORS_ORIGINS: https://blc-rick-seo-agent.invalid
+      # Optional here: visitors never sign in, and with PUBLIC_AUDITS_ENABLED + APP_ENV=production
+      # an empty CLERK_ISSUER makes the operator endpoints answer 403 (apps/api/auth.py).
+      CLERK_ISSUER: ${CLERK_ISSUER:-}
+    volumes:
+      - storage:/app/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: sh -c "alembic upgrade head && uvicorn apps.api.main:app --host 0.0.0.0 --port 8000"
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    env_file:
+      - .env
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-blc}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-blc_website_audit}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      LOCAL_REPORT_STORAGE_DIR: /app/storage/reports
+      LOCAL_SCREENSHOT_STORAGE_DIR: /app/storage/screenshots
+      PLAYWRIGHT_BROWSERS_PATH: /root/.cache/ms-playwright
+      # This edition's switches, pinned here for BOTH api and worker so the PDF (worker) and
+      # the JSON/DOCX (api) can never be rendered with different settings.
+      REPORT_PROFILE: teaser
+      PUBLIC_AUDITS_ENABLED: "true"
+      SEARCH_CONSOLE_ENABLED: "false"
+      # 4 GB box: keep one browser alive at a time.
+      CRAWLER_CONCURRENCY: "1"
+    volumes:
+      - storage:/app/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # One-time Semrush connect (make semrush-connect COMPOSE="docker compose -f docker-compose.prod.yml")
+    # streams a browser over VNC on this port, bound to the SERVER's localhost only and reached via an
+    # SSH tunnel (ssh -L 5900:localhost:5900 ...) — never exposed publicly.
+    ports:
+      - "127.0.0.1:5900:5900"
+    command: celery -A apps.worker.celery_app.celery_app worker --loglevel=info --concurrency=1
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./apps/frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_BASE_URL: https://blc-rick-seo-agent.invalid/api
+        NEXT_PUBLIC_APP_NAME: "BLC Website Audit"
+        # Public build: renders without Clerk, so the Clerk keys below are not needed.
+        NEXT_PUBLIC_PUBLIC_AUDITS_ENABLED: "true"
+        NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-}
+    # No env_file here on purpose: the internet-facing frontend must not see the DB password
+    # or the API keys that live in the root .env.
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-}
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:-}
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - frontend
+      - api
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  storage:
+  caddy_data:
+  caddy_config:

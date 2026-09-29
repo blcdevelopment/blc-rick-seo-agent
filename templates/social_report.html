@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>{{ brand.name }} — Social Media Audit</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm; }
+  :root { --primary: {{ brand.primary_color }}; --accent: {{ brand.accent_color }}; }
+  * { box-sizing: border-box; }
+  body { font-family: "{{ brand.font_body }}", -apple-system, Arial, sans-serif; color: #1f2733; font-size: 12px; line-height: 1.5; }
+  h1, h2, h3 { font-family: "{{ brand.font_heading }}", Arial, sans-serif; color: var(--primary); margin: 0 0 8px; }
+  h1 { font-size: 24px; } h2 { font-size: 16px; margin-top: 22px; } h3 { font-size: 13px; }
+  .muted { color: #6b7787; }
+  .header { display: flex; align-items: center; justify-content: space-between; border-bottom: 3px solid var(--primary); padding-bottom: 10px; }
+  .brand-mark { display: flex; align-items: center; gap: 10px; }
+  .brand-mark img { height: 36px; }
+  .brand-name { font-weight: 700; color: var(--primary); font-size: 16px; }
+  .eyebrow { text-transform: uppercase; letter-spacing: .08em; font-size: 10px; color: var(--accent); font-weight: 700; }
+  .score-hero { display: flex; align-items: center; gap: 18px; margin: 18px 0; }
+  .score-badge { width: 96px; height: 96px; border-radius: 50%; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #fff; }
+  .score-badge .num { font-size: 30px; font-weight: 800; line-height: 1; }
+  .score-badge .lbl { font-size: 9px; text-transform: uppercase; letter-spacing: .06em; }
+  .band-strong { background: #28864b; } .band-fair { background: #c98a16; } .band-weak { background: #b42318; }
+  .kpis { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+  .kpi { border: 1px solid #e3e8ef; border-radius: 8px; padding: 8px 12px; min-width: 120px; }
+  .kpi .v { font-size: 16px; font-weight: 700; color: var(--primary); }
+  .kpi .k { font-size: 10px; color: #6b7787; text-transform: uppercase; letter-spacing: .04em; }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #e7ebf1; font-size: 11px; }
+  th { color: #6b7787; text-transform: uppercase; font-size: 9px; letter-spacing: .04em; }
+  .finding { border: 1px solid #e3e8ef; border-left: 4px solid var(--accent); border-radius: 6px; padding: 8px 12px; margin: 8px 0; }
+  .finding .ttl { font-weight: 700; }
+  .pill { display: inline-block; font-size: 9px; font-weight: 700; text-transform: uppercase; padding: 2px 7px; border-radius: 999px; margin-right: 6px; }
+  .imp-high { background: #fde8e6; color: #b42318; } .imp-medium { background: #fff3da; color: #9a6a12; } .imp-low { background: #eef2f7; color: #51607a; }
+  .tier { background: #eaf3fb; color: var(--primary); }
+  .footer { margin-top: 22px; border-top: 1px solid #e7ebf1; padding-top: 8px; font-size: 10px; color: #93a0b3; }
+</style>
+</head>
+<body>
+  {# Teaser profile (report_profile.py): no fixes in the payload; payload.cta replaces them. #}
+  {% set teaser = payload.report_profile == 'teaser' %}
+  <div class="header">
+    <div class="brand-mark">
+      {% if brand.logo_exists %}<img src="{{ brand.logo_uri }}" alt="{{ brand.name }}" />{% else %}<span class="brand-name">{{ brand.placeholder_fallback }}</span>{% endif %}
+      <span class="brand-name">{{ brand.name }}</span>
+    </div>
+    <div style="text-align:right">
+      <div class="eyebrow">Social Media Audit</div>
+      <div class="muted">{{ payload.generated_date }}</div>
+    </div>
+  </div>
+
+  {% set band = 'weak' %}
+  {% if payload.score is not none and payload.score >= 75 %}{% set band = 'strong' %}{% elif payload.score is not none and payload.score >= 50 %}{% set band = 'fair' %}{% endif %}
+
+  <div class="score-hero">
+    <div class="score-badge band-{{ band }}">
+      <span class="num">{% if payload.score is not none %}{{ payload.score }}{% else %}—{% endif %}</span>
+      <span class="lbl">/ 100</span>
+    </div>
+    <div>
+      <h1>Social Media Score</h1>
+      <p class="muted">
+        {% for platform, handle in payload.handles.items() %}<strong>{{ platform|capitalize }}</strong> @{{ handle }}{% if not loop.last %} · {% endif %}{% endfor %}
+        — collection status: {{ payload.status }}
+      </p>
+    </div>
+  </div>
+
+  {% if payload.executive_summary %}
+  <h2>Summary</h2>
+  <p>{{ payload.executive_summary }}</p>
+  {% endif %}
+
+  {% if payload.status in ['complete', 'partial'] %}
+  <div class="kpis">
+    <div class="kpi"><div class="v">{{ payload.summary.get('total_followers', 0) }}</div><div class="k">Followers</div></div>
+    {% set ppm = payload.summary.get('avg_posts_per_month') %}
+    <div class="kpi"><div class="v">{{ ppm if ppm is not none else "—" }}</div><div class="k">Posts / month</div></div>
+    {% set er = payload.summary.get('avg_engagement_rate_pct') %}
+    <div class="kpi"><div class="v">{{ (er ~ "%") if er is not none else "—" }}</div><div class="k">Engagement</div></div>
+    <div class="kpi"><div class="v">{% if payload.summary.get('days_since_last_post') is not none %}{{ payload.summary.get('days_since_last_post') }}d{% else %}—{% endif %}</div><div class="k">Since last post</div></div>
+    <div class="kpi"><div class="v">{{ payload.platforms_audited }}</div><div class="k">Platforms</div></div>
+  </div>
+
+  {% if payload.findings %}
+  <h2>{% if teaser %}What we found{% else %}What to improve{% endif %}</h2>
+  {% for f in payload.findings %}
+  <div class="finding">
+    <div class="ttl">{{ f.label }}{% if f.metric %} <span class="muted" style="font-weight:400">— {{ f.metric }}</span>{% endif %}</div>
+    <div>
+      <span class="pill imp-{{ f.impact }}">{{ f.impact }} impact</span>
+      {% if f.tier %}<span class="pill tier">{{ f.tier|replace('_', ' ') }}</span>{% endif %}
+    </div>
+    {% if f.narrative %}<div>{{ f.narrative }}</div>{% elif f.remediation %}<div class="muted">{{ f.remediation }}</div>{% endif %}
+  </div>
+  {% endfor %}
+  {% else %}
+  <h2>{% if teaser %}What we found{% else %}What to improve{% endif %}</h2>
+  <p class="muted">No major issues detected — the audited profiles meet the rubric's key checks.</p>
+  {% endif %}
+
+  {% if payload.strengths %}
+  <h2>What's working</h2>
+  <ul>
+    {% for s in payload.strengths %}<li>{{ s.label }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+
+  {% set ci = payload.content_insights %}
+  {% if ci %}
+  <h2>Content insights</h2>
+  <div class="kpis">
+    {% set cm = ci.content_mix %}
+    {% if cm.video is not none %}<div class="kpi"><div class="v">{{ cm.video }}%</div><div class="k">Video / Reels</div></div>{% endif %}
+    {% if cm.image is not none %}<div class="kpi"><div class="v">{{ cm.image }}%</div><div class="k">Image</div></div>{% endif %}
+    {% if cm.carousel is not none %}<div class="kpi"><div class="v">{{ cm.carousel }}%</div><div class="k">Carousel</div></div>{% endif %}
+    {% if ci.total_views is not none %}<div class="kpi"><div class="v">{{ ci.total_views }}</div><div class="k">Lifetime YouTube views</div></div>{% endif %}
+    {% if ci.avg_views_per_post is not none %}<div class="kpi"><div class="v">{{ ci.avg_views_per_post }}</div><div class="k">Avg views / video</div></div>{% endif %}
+    {% if ci.avg_engagement_rate_pct is not none %}<div class="kpi"><div class="v">{{ ci.avg_engagement_rate_pct }}%</div><div class="k">Engagement rate</div></div>{% endif %}
+    {% if ci.avg_like_to_comment_ratio is not none %}<div class="kpi"><div class="v">{{ ci.avg_like_to_comment_ratio }}×</div><div class="k">Likes / comment</div></div>{% endif %}
+    {% if ci.avg_hashtags_per_post is not none %}<div class="kpi"><div class="v">{{ ci.avg_hashtags_per_post }}</div><div class="k">Hashtags / post</div></div>{% endif %}
+    {% if ci.posts_with_cta_caption_pct is not none %}<div class="kpi"><div class="v">{{ ci.posts_with_cta_caption_pct }}%</div><div class="k">Captions with CTA</div></div>{% endif %}
+    {% if ci.max_posting_gap_days is not none %}<div class="kpi"><div class="v">{{ ci.max_posting_gap_days }}d</div><div class="k">Longest gap</div></div>{% endif %}
+    {% if ci.avg_follower_following_ratio is not none %}<div class="kpi"><div class="v">{{ ci.avg_follower_following_ratio }}×</div><div class="k">Follower / following</div></div>{% endif %}
+  </div>
+  {% endif %}
+
+  {% set cyt = payload.connected_youtube %}
+  {% if cyt %}
+  <h2>Connected YouTube analytics</h2>
+  {# Lines are precomposed by the shared builder so PDF/DOCX/UI prose can't drift. #}
+  <p class="muted" style="font-size:10px;">{{ cyt.meta }}</p>
+  <ul>
+    {% for line in cyt.lines %}<li>{{ line }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+
+  {% if payload.top_posts %}
+  <h2>Top performing posts</h2>
+  <table>
+    <thead><tr><th>Platform</th><th>Type</th><th>Title</th><th>Views</th><th>Likes</th><th>Comments</th><th>Posted</th></tr></thead>
+    <tbody>
+      {% for tp in payload.top_posts %}
+      <tr>
+        <td>{{ (tp.platform or '')|capitalize }}</td>
+        <td>{{ (tp.type or '')|capitalize }}</td>
+        <td>{{ tp.title or '—' }}</td>
+        <td>{% if tp.views is not none %}{{ tp.views }}{% else %}—{% endif %}</td>
+        <td>{{ tp.likes }}</td>
+        <td>{{ tp.comments }}</td>
+        <td>{{ tp.posted or '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  <h2>Per-platform scorecard</h2>
+  <table>
+    <thead><tr><th>Platform</th><th>Handle</th><th>Followers</th><th>Posts/mo</th><th>Engagement</th><th>Video %</th><th>Last post</th><th>Business</th></tr></thead>
+    <tbody>
+      {% for p in payload.per_platform %}
+      <tr>
+        <td>{{ (p.platform or '')|capitalize }}</td>
+        <td>{% if p.handle %}@{{ p.handle }}{% else %}—{% endif %}</td>
+        <td>{% if p.followers is not none %}{{ p.followers }}{% else %}—{% endif %}</td>
+        <td>{% if p.posts_per_month is not none %}{{ p.posts_per_month }}{% else %}—{% endif %}</td>
+        <td>{% if p.avg_engagement_rate_pct is not none %}{{ p.avg_engagement_rate_pct }}%{% else %}—{% endif %}</td>
+        <td>{% if p.video_share_pct is not none %}{{ p.video_share_pct }}%{% else %}—{% endif %}</td>
+        <td>{% if p.days_since_last_post is not none %}{{ p.days_since_last_post }}d ago{% else %}—{% endif %}</td>
+        <td>{% if p.is_business %}✓{% else %}—{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <h2>No social data</h2>
+  <p class="muted">Social data could not be collected (status: {{ payload.status }}). Confirm the handles are public and that the Apify token is configured, then re-run.</p>
+  {% endif %}
+
+  {% if teaser %}
+  <h2>Next steps</h2>
+  <div class="finding" style="border-left-color: var(--primary);">
+    <p>{{ payload.cta.message }}</p>
+    {% if payload.cta.url %}
+    <p><a href="{{ payload.cta.url }}" style="color: var(--primary); font-weight: 700;">{{ payload.cta.label }}</a></p>
+    <p class="muted">{{ payload.cta.url }}</p>
+    {% else %}
+    <p><strong>{{ payload.cta.label }}</strong></p>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <div class="footer">{{ brand.name }} · Social Media Audit · Generated {{ payload.generated_date }}</div>
+</body>
+</html>

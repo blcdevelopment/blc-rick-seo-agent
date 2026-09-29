@@ -1,0 +1,81 @@
+name: Deploy (DISABLED - Rick edition not provisioned)
+
+# DISABLED ON PURPOSE. Do not re-enable without a reviewed PR.
+#
+# This file was inherited from blc-social-audit, whose copy deploys the LIVE
+# production stack (ai.builderleadconverter.com) on every merge to main. This
+# repository is the separate Rick edition, which has no server, domain or
+# deploy target yet, so the workflow is locked three ways:
+#
+#   1. No `push` trigger: merging to main never starts it.
+#   2. The job is hard-disabled with `if: false`: a manual run is skipped.
+#   3. It reads RICK_DEPLOY_* secrets, never the parent's DEPLOY_* names, so
+#      org-level secrets for the production box can never be picked up here.
+#
+# deploy/deploy.sh also refuses to run. When this edition gets its own host
+# and domain, lift all of these deliberately (see DEPLOYMENT.md §4).
+#
+# Secrets it will need then (Settings -> Secrets and variables -> Actions):
+#   RICK_DEPLOY_HOST         the box IP / hostname
+#   RICK_DEPLOY_USER         SSH user on the box
+#   RICK_DEPLOY_SSH_KEY      private key whose .pub is in the box's authorized_keys
+#   RICK_DEPLOY_KNOWN_HOSTS  `ssh-keyscan <host>` output, to pin the box's host key
+#   RICK_DEPLOY_PORT         optional SSH port (defaults to 22)
+
+on:
+  workflow_dispatch: {} # manual only; the job below is disabled regardless
+
+# One deploy at a time. Never cancel a deploy mid-flight (that could leave the
+# box half-rolled); queue instead and converge on the newest commit.
+concurrency:
+  group: deploy-rick-seo-agent
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy (disabled)
+    if: ${{ false }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Deploy over SSH
+        env:
+          DEPLOY_HOST: ${{ secrets.RICK_DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.RICK_DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.RICK_DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.RICK_DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_PORT: ${{ secrets.RICK_DEPLOY_PORT }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${DEPLOY_HOST}" ] || [ -z "${DEPLOY_USER}" ] \
+             || [ -z "${DEPLOY_SSH_KEY}" ] || [ -z "${DEPLOY_KNOWN_HOSTS}" ]; then
+            echo "::error::Missing deploy secrets. Set RICK_DEPLOY_HOST, RICK_DEPLOY_USER, RICK_DEPLOY_SSH_KEY, RICK_DEPLOY_KNOWN_HOSTS."
+            exit 1
+          fi
+
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${DEPLOY_SSH_KEY}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "${DEPLOY_KNOWN_HOSTS}" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+          PORT="${DEPLOY_PORT:-22}"
+
+          # Stream the committed deploy script to the box and run it there,
+          # pinning the exact commit that triggered this run ($GITHUB_SHA, a
+          # plain hex SHA from the runner env -- not interpolated, so no
+          # injection surface). IdentitiesOnly keeps ssh from offering other
+          # keys; StrictHostKeyChecking=yes enforces the pinned known_hosts.
+          ssh -i ~/.ssh/deploy_key -p "${PORT}" \
+              -o IdentitiesOnly=yes \
+              -o StrictHostKeyChecking=yes \
+              "${DEPLOY_USER}@${DEPLOY_HOST}" \
+              'bash -s' -- "${GITHUB_SHA}" < deploy/deploy.sh
