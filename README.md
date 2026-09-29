@@ -5,8 +5,8 @@ with Instagram / Facebook / YouTube links) without signing in; the site crawls i
 scores it against versioned YAML rubrics, and renders a branded **teaser** report (web page, PDF and
 DOCX): the problems and scores, none of the fixes, and a "Book a meeting with Rick" call-to-action.
 
-**Status:** ready to deploy to **https://seo.builderleadconverter.com** on the parent's shared
-box; the go-live steps are in [DEPLOYMENT.md](DEPLOYMENT.md). This repo is a separate copy of
+**Status:** live at **https://seo.builderleadconverter.com** since 2026-09-29, on the parent's
+shared box; how it runs and deploys is in [DEPLOYMENT.md](DEPLOYMENT.md). This repo is a separate copy of
 `blcdevelopment/blc-social-audit` (the live app at https://ai.builderleadconverter.com). Nothing here may deploy to that app or share
 its database, domain or compose project.
 
@@ -53,7 +53,7 @@ dashboard for the AI Visibility section — it can never add, drop or invent a f
 | [docs/OPERATOR_GUIDE.md](docs/OPERATOR_GUIDE.md) | Running an audit and reading the teaser report |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Day-2: settings, cron, the Semrush session, troubleshooting |
 | [docs/LIMITATIONS.md](docs/LIMITATIONS.md) | Honest caveats and accepted tradeoffs, including the public-mode gaps |
-| [DEPLOYMENT.md](DEPLOYMENT.md) | The go-live plan: current locks, target setup, open decisions, checklist |
+| [DEPLOYMENT.md](DEPLOYMENT.md) | The shared server (Part 1), how this app runs and deploys (Part 2), the box's rules, decisions, and the go-live record |
 
 ## Quickstart
 
@@ -86,7 +86,8 @@ make qa-repro   # runs the same site twice and asserts identical scores
 make migrate    # alembic upgrade head
 ```
 
-Maintenance scripts run directly (from cron once deployed):
+Maintenance scripts run directly (on the box only the cleanup runs from cron;
+[docs/OPERATIONS.md](docs/OPERATIONS.md) §4):
 
 ```bash
 python scripts/cleanup_storage.py [--dry-run]   # prune old reports/screenshots/exports
@@ -124,5 +125,5 @@ tests and the QA harness run.
 
 Work on a branch and open a PR — `pre-commit` (ruff, isort, flake8, the full pytest suite, and the
 frontend typecheck when UI files change) runs on every commit and again in CI. Merging to `main`
-does **not** deploy: the deploy workflow and `deploy/deploy.sh` are disabled until this edition has
-its own server and domain.
+does **not** deploy by itself: after the merge, run **Actions → Deploy → Run workflow** on `main`
+([DEPLOYMENT.md](DEPLOYMENT.md), Part 2).

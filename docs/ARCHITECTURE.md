@@ -451,8 +451,8 @@ rate-limits audit starts. The api, worker, frontend and datastores stay on the p
 network, under memory ceilings.
 `docker-compose.prod.yml` pins this edition's switches (`REPORT_PROFILE=teaser`,
 `PUBLIC_AUDITS_ENABLED`, `SEARCH_CONSOLE_ENABLED=false`) on both api and worker and builds the
-public UI (no Clerk keys needed). The deployment plan and its open items are in
-[`DEPLOYMENT.md`](../DEPLOYMENT.md). `alembic upgrade head` runs automatically on the `api`
+public UI (no Clerk keys needed). It has been live since 2026-09-29; how it runs and deploys, and
+its open items, are in [`DEPLOYMENT.md`](../DEPLOYMENT.md). `alembic upgrade head` runs automatically on the `api`
 container start. The Dockerfiles now install **pinned** dependencies from
 `requirements.txt` first, then the package itself with `--no-deps -e .`, for reproducible image
 builds. (GSC OAuth tokens are stored plaintext — a documented accepted risk on the single
