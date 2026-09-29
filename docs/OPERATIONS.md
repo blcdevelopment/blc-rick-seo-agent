@@ -1,9 +1,10 @@
 # Operations
 
 Day-2 runbook for the Rick edition: changing settings, the cron jobs, the Semrush session behind AI
-Visibility, and troubleshooting. The edition deploys to **https://seo.builderleadconverter.com**
-on the parent's shared box; [DEPLOYMENT.md](../DEPLOYMENT.md) has the go-live steps and the box's
-rules. Server commands assume the checkout at `~/blc-rick-seo-agent` and the compose project
+Visibility, and troubleshooting. The edition is live at **https://seo.builderleadconverter.com**
+(since 2026-09-29) on the parent's shared box; [DEPLOYMENT.md](../DEPLOYMENT.md) describes the
+server (Part 1), how this app runs and deploys (Part 2), the box's rules and the go-live record.
+Server commands assume the checkout at `~/blc-rick-seo-agent` and the compose project
 `blc-rick-seo-agent`. The parent's live stack has its own runbook in
 `blcdevelopment/blc-social-audit`.
 
@@ -58,7 +59,7 @@ This decides whether a change needs a **rebuild** or just a **recreate**.
 | `BOOKING_URL` / `BOOKING_CTA_LABEL` in `.env` | `up -d --force-recreate api worker` | No |
 | `REPORT_PROFILE` / `PUBLIC_AUDITS_ENABLED` / `SEARCH_CONSOLE_ENABLED` | edit them in `docker-compose.prod.yml` (a code change), then recreate **both** api and worker | No |
 | `NEXT_PUBLIC_*` | `up -d --build frontend` | Yes (frontend) |
-| Application code | merge the PR, then **Actions → Deploy → Run workflow** ([DEPLOYMENT.md](../DEPLOYMENT.md) §5) | Yes |
+| Application code | merge the PR, then **Actions → Deploy → Run workflow** ([DEPLOYMENT.md](../DEPLOYMENT.md) Part 2) | Yes |
 
 A PDF or DOCX is rendered once, when its audit completes: a changed call-to-action or profile shows
 up in new reports and on the web page immediately, but existing files keep the old one.
@@ -93,16 +94,22 @@ Its full sequence is in [DEPLOYMENT.md](../DEPLOYMENT.md) §6.
 
 ## 4. Cron jobs (host crontab)
 
+**Installed on the box (29 September 2026): only the storage retention job**, in the crontab of
+`abdullah` at 03:15 UTC, as the first line below shows. The alert and backup jobs are **not
+installed**: `ALERT_WEBHOOK_URL` is empty, and this app gets no nightly backup because its reports
+are treated as disposable ([DEPLOYMENT.md](../DEPLOYMENT.md) Part 1, 1.6). `deploy/deploy.sh`
+still dumps the database before every deploy.
+
 Each entry must stay on **one line** (crontab has no `\` continuation) and a literal `%` must be
 written `\%`. The log and backup names carry a `rick` prefix so they never overwrite the parent's
 files on the shared box.
 
 ```bash
 # storage retention — prune reports/screenshots/tool-exports past STORAGE_RETENTION_DAYS (default 90)
-0 3 * * * cd ~/blc-rick-seo-agent && docker compose -p blc-rick-seo-agent -f docker-compose.prod.yml exec -T api python scripts/cleanup_storage.py >> ~/rick-cleanup.log 2>&1
-# operational alerting — posts to ALERT_WEBHOOK_URL on failed-audit / stuck-job thresholds
+15 3 * * * cd $HOME/blc-rick-seo-agent && docker compose -p blc-rick-seo-agent -f docker-compose.prod.yml exec -T api python scripts/cleanup_storage.py </dev/null >> $HOME/backups/rick-cleanup.log 2>&1
+# NOT INSTALLED. operational alerting — posts to ALERT_WEBHOOK_URL on failed-audit / stuck-job thresholds
 */15 * * * * cd ~/blc-rick-seo-agent && docker compose -p blc-rick-seo-agent -f docker-compose.prod.yml exec -T api python scripts/health_alert.py >> ~/rick-alert.log 2>&1
-# nightly backup — pg_dump INSIDE the postgres container (the api/worker images ship no pg_dump)
+# NOT INSTALLED (02:30 is the blogs backup's slot). nightly backup — pg_dump INSIDE the postgres container (the api/worker images ship no pg_dump)
 30 2 * * * mkdir -p ~/backups && cd ~/blc-rick-seo-agent && bash -o pipefail -c "docker compose -p blc-rick-seo-agent -f docker-compose.prod.yml exec -T postgres pg_dump -U blc blc_rick_seo_agent | gzip > ~/backups/rick_$(date +\%F).sql.gz" >> ~/rick-backup.log 2>&1 && find ~/backups -name 'rick_*.sql.gz' -mtime +14 -delete
 ```
 
@@ -171,8 +178,12 @@ suspend the account — a business-risk decision the operator owns. Keep volume 
 - **Logs:** `docker compose -p blc-rick-seo-agent -f docker-compose.prod.yml logs -f api worker`. A
   render error like `'dict object' has no attribute …` usually means a **stale worker** — Celery
   doesn't hot-reload, so `up -d --force-recreate worker`.
-- **Disk:** `df -h`, `docker system df`. Reclaim with `docker image prune -f`, and old build cache
-  with `docker builder prune -f --filter until=720h`.
+- **Disk:** `df -h`, `docker system df`. On this shared box, prune only under the shared deploy
+  lock, so nothing is removed during another app's build:
+  `flock -w 1800 /tmp/blc-production-deploy.lock docker image prune -f` (untagged images only) and
+  `flock -w 1800 /tmp/blc-production-deploy.lock docker builder prune -f --filter until=720h`.
+  Never `docker system prune`, `docker image prune -a`, `docker volume prune` or an unfiltered
+  `docker builder prune` ([DEPLOYMENT.md](../DEPLOYMENT.md) Part 1, 1.3 rule 6).
 - **Proxy:** the parent's Caddy terminates TLS and routes the hostname to `rick-edge`. Never start
   a second proxy on 80/443. Edge config changes ship with a deploy (tested with `nginx -t`, then
   reloaded).
@@ -196,13 +207,15 @@ suspend the account — a business-risk decision the operator owns. Keep volume 
 ## 8. Security posture
 
 - **Visitors are anonymous.** Anyone can start an audit and anyone with an `/audit/<id>` link can
-  read that report; the link never expires. There is **no rate limiting yet** — a go-live blocker
+  read that report; the link never expires. Audit starts are **rate-limited at the edge proxy**
+  (`deploy/edge/rick-edge.conf`; over the limit, 429), but there is no CAPTCHA or daily quota
   ([LIMITATIONS.md](LIMITATIONS.md) §2).
 - **Operator endpoints** (history, reruns, share links, `/metrics`) answer 403 on a deployment
   without `CLERK_ISSUER`, so they never fall open.
 - **The teaser hides fixes; the database keeps them.** Backups and DB access expose everything.
 - **`.env` holds every secret** (`chmod 600`, never committed; `.env.bak.*` deserves the same care).
-  This edition currently reuses the parent's API keys, so their quota and billing are shared.
+  This edition reuses only two of the parent's keys, `GOOGLE_PSI_API_KEY` and `YOUTUBE_API_KEY`
+  (shared free quota); OpenAI, Apify and Places are not set here.
 - **No Google OAuth tokens are stored** (Search Console is off).
 - **API keys never ride in URLs** and the HTTP client loggers are held at WARNING, so credentials
   don't reach the logs. `/docs`, `/redoc` and `/openapi.json` are disabled when

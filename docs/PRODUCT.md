@@ -20,8 +20,8 @@ parent, where an internal operator gets the full report.
 - **Audience of the report:** home builders, remodelers and local service businesses — the wording
   in `prompts/` and the rubric remediation text assumes that reader.
 - **Users of the tool:** public visitors, no sign-in. Operator endpoints (history, reruns, share
-  links, metrics) stay Clerk-gated at the API. Not deployed yet — see
-  [DEPLOYMENT.md](../DEPLOYMENT.md).
+  links, metrics) stay Clerk-gated at the API. Live at https://seo.builderleadconverter.com
+  since 2026-09-29 — see [DEPLOYMENT.md](../DEPLOYMENT.md).
 - **Core promise:** *the numbers are defensible*. Scores come from deterministic rules over
   extracted facts, never from a language model. Identical facts always produce identical scores.
 
@@ -104,8 +104,8 @@ and **polish** (the PDF is presentable to a prospect, not a dev artifact).
   in the public build.
 - **Ops:** production compose for the parent's shared Linode box at seo.builderleadconverter.com,
   behind an nginx edge proxy with audit-start rate limits; a manual deploy workflow and script
-  ([DEPLOYMENT.md](../DEPLOYMENT.md)); optional Sentry, gated `/metrics`, cron storage retention and
-  backups.
+  ([DEPLOYMENT.md](../DEPLOYMENT.md)); optional Sentry, gated `/metrics`, cron storage retention,
+  and a database dump before each deploy (no nightly backup).
 - **Off by default but built:** competitor-benchmarking seam (no vendor client), advisory axe-core
   accessibility pass, connected-mode YouTube Analytics.
 

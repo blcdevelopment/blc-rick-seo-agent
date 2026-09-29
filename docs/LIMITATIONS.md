@@ -90,8 +90,9 @@ one report (PDF and DOCX). Known limits of that flow:
   Clerk-gated, as in the parent app. The Google OAuth callback exists only when
   `SEARCH_CONSOLE_ENABLED` and is intentionally unauthenticated because Google calls it; it is
   protected instead by an HMAC-signed, time-limited CSRF `state`.
-- **Public mode has no abuse controls yet — fix before going public.** There is no rate limit,
-  CAPTCHA or quota. One anonymous submission runs a Playwright crawl (up to
+- **Public mode has edge rate limits, but no CAPTCHA or quota.** The edge proxy limits audit
+  starts (`deploy/edge/rick-edge.conf`: per visitor a burst of 3, then 1 a minute; everyone
+  together 20, then 10 a minute; 429 over that). One anonymous submission runs a Playwright crawl (up to
   `CRAWLER_MAX_PAGES`, default 10), a site-health sweep (up to 150 internal + 50 outbound URL
   checks), PageSpeed calls, and — when the site links its social profiles or the visitor adds them
   — Apify / YouTube / Google Places calls, plus a Semrush page load and a paid vision call when AI
@@ -294,8 +295,8 @@ one report (PDF and DOCX). Known limits of that flow:
 
 ## 10. Recommended next steps
 
-1. **Before going public:** rate limiting / CAPTCHA on `POST /audits`, per-audit cost limits, and
-   enough worker capacity for the expected traffic (§2).
+1. **Public since 2026-09-29:** edge rate limits on `POST /audits` are in place; a CAPTCHA or daily
+   quota, per-audit cost limits, and enough worker capacity for the expected traffic remain (§2).
 2. If operators get a Clerk login, use a Clerk **production** instance with invitation-only
    sign-up. _(Request-level SSRF interception in the crawler is now DONE —
    `crawler_intercept_requests`; the `azp` check now rejects a missing claim and a
