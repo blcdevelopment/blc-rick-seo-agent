@@ -11,7 +11,7 @@ openai==2.38.0
 playwright==1.60.0
 psycopg[binary]==3.3.4
 pydantic-settings==2.14.1
-pyjwt[crypto]==2.13.0
+pyjwt[crypto]==2.14.0
 python-dotenv==1.2.2
 PyYAML==6.0.3
 sentry-sdk==2.63.0

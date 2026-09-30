@@ -17,7 +17,13 @@ from apps.worker.celery_app import celery_app
 from apps.worker.stages.ai_visibility.collector import collect_ai_visibility_facts
 from apps.worker.stages.benchmarking.collector import collect_benchmark_facts
 from apps.worker.stages.commentary import generate_commentary, generate_social_commentary
-from apps.worker.stages.crawler import CrawlResult, crawl_site_sync
+from apps.worker.stages.crawler import (
+    BOT_CHECK_BLOCKED_MESSAGE,
+    CrawlResult,
+    SiteBlockedError,
+    crawl_site_sync,
+    is_interstitial_url,
+)
 from apps.worker.stages.docx_renderer import DocxRenderResult, render_audit_docx
 from apps.worker.stages.external_seo import collect_external_seo_facts, empty_external_seo_facts
 from apps.worker.stages.extractor_seo import extract_seo_facts
@@ -149,7 +155,10 @@ def _mark_job(
 
 def _psi_page_urls(crawl_result: CrawlResult, fallback_url: str) -> list[str]:
     urls = [page.final_url or page.url for page in crawl_result.pages]
-    return urls or [crawl_result.final_url or fallback_url]
+    urls = urls or [crawl_result.final_url or fallback_url]
+    # Second guard (the crawler already refuses them): a bot check's own page is never sent to
+    # PageSpeed or the link sweep.
+    return [url for url in urls if not is_interstitial_url(url)] or [fallback_url]
 
 
 def _upsert_audit_result(
@@ -760,6 +769,10 @@ def run_collection_audit(
 
             _mark_job(db, job, AuditStatus.CRAWLING, "Rendering website pages", 15)
             crawl_result = crawler(job.url, settings, str(job.id))
+            if is_interstitial_url(crawl_result.final_url):
+                # Second guard: the crawler never returns a bot check's page as the homepage. If
+                # one slips through, fail plainly rather than score it or send it to PageSpeed.
+                raise SiteBlockedError(BOT_CHECK_BLOCKED_MESSAGE)
 
             _mark_job(
                 db,

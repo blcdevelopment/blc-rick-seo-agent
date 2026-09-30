@@ -912,3 +912,270 @@ def test_one_throttled_url_beside_a_healthy_one_stays_complete() -> None:
     counters = asyncio.run(run())
     assert counters["rate_limited_internal"] == 1
     assert counters["internal_conclusive"] == 1
+
+
+class _SiteGroundWall(_Handler):
+    """Every URL answers like SiteGround's anti-bot check: 202 + sg-captcha + noindex."""
+
+    seen: list[tuple[str, str]] = []
+
+    def _respond(self, include_body: bool) -> None:
+        self.seen.append((self.command, self.path))
+        body = (
+            b'<html><head><meta http-equiv="refresh" content="0;/.well-known/sgcaptcha/'
+            b'?r=%2F&y=ipc:127.0.0.1:1790749657.771"></head></html>'
+        )
+        self.send_response(202)
+        self.send_header("SG-Captcha", "challenge")
+        self.send_header("X-Robots-Tag", "noindex")
+        self.send_header("Cache-Control", "no-store,no-cache,max-age=0")
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if include_body:
+            self.wfile.write(body)
+
+
+def _walled_crawl(base: str) -> dict:
+    return {
+        "final_url": f"{base}/",
+        "pages": [{"url": f"{base}/", "final_url": f"{base}/"}],
+        "discovered_links": [{"url": f"{base}/page-{index}"} for index in range(6)],
+    }
+
+
+def _no_recheck(monkeypatch) -> list[str]:
+    calls: list[str] = []
+
+    async def _recheck(url, settings):
+        calls.append(str(url))
+        return True
+
+    monkeypatch.setattr(site_health, "_browser_ua_recheck", _recheck)
+    return calls
+
+
+def test_bot_checked_sitemap_stops_the_sweep_before_any_link_request(monkeypatch) -> None:
+    # SiteGround answers every URL with its 202 check (plus x-robots-tag: noindex). That is no
+    # clean pass and no "non-indexable" finding: the source goes partial/bot_blocked (which the
+    # scoring trust gate strips), and once the sitemap met the check no link request is sent.
+    rechecks = _no_recheck(monkeypatch)
+    _SiteGroundWall.seen = []
+    with _serve(_SiteGroundWall) as base:
+        facts = collect_site_health_facts(
+            url=f"{base}/",
+            seo_facts={"status": "complete", "pages": []},
+            crawled_pages=_walled_crawl(base),
+            rendered_pages=None,
+            settings=_settings(),
+        )
+
+    assert facts["status"] == "partial"
+    assert facts["reason"] == "bot_blocked"
+    assert facts["summary"]["non_indexable_internal_urls"] == 0
+    assert facts["summary"]["internal_urls_checked"] == 0
+    assert facts["checks"]["sitemap_status"] == "bot_check"
+    assert facts["checks"]["skipped_breaker"] == 6
+    assert _SiteGroundWall.seen == [("GET", "/sitemap.xml")]
+    assert rechecks == []
+    assert any("security check" in note for note in facts["notes"])
+
+
+def test_first_bot_check_answer_trips_the_breaker_like_a_final_429(monkeypatch) -> None:
+    # No sitemap: the first link request meets the check. Like a final 429 it is neither
+    # checked nor answered and its noindex is never counted; unlike a 429 the breaker trips at
+    # once, with no GET retry and no browser-profile recheck (the checker is never disguised).
+    rechecks = _no_recheck(monkeypatch)
+    _SiteGroundWall.seen = []
+    with _serve(_SiteGroundWall) as base:
+        facts = collect_site_health_facts(
+            url=f"{base}/",
+            seo_facts={"status": "complete", "pages": []},
+            crawled_pages=_walled_crawl(base),
+            rendered_pages=None,
+            settings=_settings(site_health_sitemap_max_urls=0, site_health_per_host_concurrency=1),
+        )
+
+    assert facts["status"] == "partial"
+    assert facts["reason"] == "bot_blocked"
+    assert facts["summary"]["non_indexable_internal_urls"] == 0
+    assert facts["summary"]["internal_urls_checked"] == 0
+    assert facts["checks"]["internal_urls_answered"] == 0
+    assert facts["checks"]["bot_check_internal_urls"] == 1
+    assert facts["checks"]["skipped_breaker"] == 5
+    assert facts["checks"]["waf_signals"] == 1
+    assert facts["checks"]["browser_recheck_ok"] is None
+    assert _SiteGroundWall.seen == [("HEAD", "/page-0")]
+    assert rechecks == []
+
+
+def _sweep_with(handler, *, internal_urls, external_urls=(), **overrides) -> tuple[dict, dict]:
+    async def run() -> tuple[dict, dict]:
+        summary: dict = {}
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), follow_redirects=False
+        ) as client:
+            counters = await site_health._sweep(
+                client,
+                internal_urls=list(internal_urls),
+                external_urls=list(external_urls),
+                settings=_settings(**overrides),
+                summary=summary,
+                examples=defaultdict(list),
+                notes=[],
+                host_allowed_cache={},
+            )
+        return counters, summary
+
+    return asyncio.run(run())
+
+
+def test_cloudflare_proxied_pages_are_not_bot_checks() -> None:
+    # cf-ray / server: cloudflare ride on every proxied response: counted as a WAF signal for
+    # QA, never as a wall.
+    def handler(request: httpx.Request) -> httpx.Response:
+        headers = {"cf-ray": "8c0ffee-IAD", "server": "cloudflare"}
+        return httpx.Response(200, headers=headers, request=request)
+
+    counters, _summary = _sweep_with(
+        handler, internal_urls=["http://site.example/a", "http://site.example/b"]
+    )
+    assert counters["internal_conclusive"] == 2
+    assert counters["bot_check_internal"] == 0
+    assert counters["bot_blocked"] is False
+    assert counters["waf_signals"] == 2
+
+
+def test_cloudflare_challenge_is_never_retried_with_get() -> None:
+    # A 403 normally earns one GET retry (HEAD-hostile servers); a 403 that is Cloudflare's
+    # challenge must not: the GET would only meet the challenge again.
+    methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        headers = {"cf-mitigated": "challenge", "cf-ray": "8c0ffee-IAD", "server": "cloudflare"}
+        return httpx.Response(403, headers=headers, request=request)
+
+    counters, summary = _sweep_with(
+        handler,
+        internal_urls=["http://site.example/a", "http://site.example/b"],
+        site_health_per_host_concurrency=1,
+    )
+    assert methods == ["HEAD"]
+    assert counters["bot_blocked"] is True
+    assert counters["bot_check_internal"] == 1
+    assert counters["skipped_breaker"] == 1
+    assert summary.get("client_error_internal_urls", 0) == 0
+
+
+def test_bot_check_on_an_outbound_link_is_inconclusive_not_broken() -> None:
+    # Another host's bot check says nothing about the audited site: inconclusive (like its
+    # 403/429 answers), never a broken link, and it does not stop the audited site's checks.
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "walled.example":
+            return httpx.Response(503, headers={"cf-mitigated": "challenge"}, request=request)
+        return httpx.Response(200, request=request)
+
+    counters, summary = _sweep_with(
+        handler,
+        internal_urls=["http://site.example/ok"],
+        external_urls=["https://walled.example/x"],
+        site_health_check_external_links=True,
+    )
+    assert counters["inconclusive_external"] == 1
+    assert summary.get("server_error_external_urls", 0) == 0
+    assert counters["bot_blocked"] is False
+    assert counters["internal_conclusive"] == 1
+
+
+def _siteground_answer(sent: list[str]):
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(f"{request.method} {request.url.path}")
+        headers = {"sg-captcha": "challenge", "x-robots-tag": "noindex"}
+        return httpx.Response(202, headers=headers, request=request)
+
+    return handler
+
+
+def test_default_lanes_start_no_request_after_the_check_answered() -> None:
+    # Two lanes per host with pacing, as in production (2 lanes, ~750 ms): the second lane passes
+    # the breaker test, then sleeps out its spacing while the first answer trips the breaker. It
+    # tests again before sending, so no second unsolved check goes out.
+    sent: list[str] = []
+    counters, _summary = _sweep_with(
+        _siteground_answer(sent),
+        internal_urls=[f"http://site.example/p{index}" for index in range(6)],
+        # The second lane sleeps 375-625 ms: far longer than the first answer takes here.
+        site_health_request_delay_ms=500,
+    )
+    assert _settings().site_health_per_host_concurrency == 2
+    assert sent == ["HEAD /p0"]
+    assert counters["bot_check_internal"] == 1
+    assert counters["skipped_breaker"] == 5
+
+
+def test_a_bot_check_that_answers_429_is_asked_once() -> None:
+    # Vercel's checkpoint answers 429 + x-vercel-mitigated: challenge. That is no rate limit to
+    # wait out: the polite 429 retries and the GET fallback would only meet the check again.
+    sent: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(f"{request.method} {request.url.path}")
+        headers = {"x-vercel-mitigated": "challenge", "retry-after": "1"}
+        return httpx.Response(429, headers=headers, request=request)
+
+    counters, _summary = _sweep_with(
+        handler,
+        internal_urls=["http://site.example/a", "http://site.example/b"],
+        site_health_per_host_concurrency=1,
+    )
+    assert sent == ["HEAD /a"]
+    assert counters["bot_check_internal"] == 1
+    assert counters["rate_limited_internal"] == 0
+    assert counters["bot_blocked"] is True
+
+
+def _portal_behind_another_websites_check(request: httpx.Request) -> httpx.Response:
+    """site.example links /client-portal, which redirects to a SaaS portal behind Cloudflare's
+    challenge; /broken is really gone; everything else is fine."""
+    if request.url.host == "portal.saas.example":
+        headers = {"cf-mitigated": "challenge", "server": "cloudflare"}
+        return httpx.Response(403, headers=headers, request=request)
+    if request.url.path in {"/client-portal", "/sitemap.xml"}:
+        location = f"https://portal.saas.example{request.url.path}"
+        return httpx.Response(302, headers={"location": location}, request=request)
+    if request.url.path == "/broken":
+        return httpx.Response(404, request=request)
+    return httpx.Response(200, request=request)
+
+
+def test_an_internal_link_to_another_websites_check_walls_nothing() -> None:
+    # The audited site answered (a redirect); the other website's check says nothing about the
+    # link. It is left unchecked, never a finding, and the sweep goes on to find the real 404.
+    counters, summary = _sweep_with(
+        _portal_behind_another_websites_check,
+        internal_urls=[
+            "http://site.example/client-portal",
+            "http://site.example/a",
+            "http://site.example/broken",
+        ],
+        site_health_per_host_concurrency=1,
+    )
+    assert counters["bot_blocked"] is False
+    assert counters["bot_check_internal"] == 0
+    assert counters["bot_check_other_site_internal"] == 1
+    assert counters["skipped_breaker"] == 0
+    assert counters["internal_checked"] == 2
+    assert counters["internal_conclusive"] == 2
+    assert summary["client_error_internal_urls"] == 1
+
+
+def test_a_sitemap_redirected_to_another_websites_check_walls_nothing() -> None:
+    async def run() -> tuple[list[str], str]:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(_portal_behind_another_websites_check),
+            follow_redirects=False,
+        ) as client:
+            return await site_health._sitemap_urls(client, "http://site.example/", _settings(), {})
+
+    assert asyncio.run(run()) == ([], "http_403")

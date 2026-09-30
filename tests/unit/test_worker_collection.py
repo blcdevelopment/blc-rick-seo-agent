@@ -1,7 +1,9 @@
 import json
 from dataclasses import replace
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -9,7 +11,14 @@ from apps.shared.audit_states import AuditStatus
 from apps.shared.config import Settings
 from apps.shared.models import AuditJob, Base
 from apps.worker import tasks
-from apps.worker.stages.crawler import CrawledPage, CrawlResult, RobotsPolicy
+from apps.worker.stages.crawler import (
+    BOT_CHECK_BLOCKED_MESSAGE,
+    CrawledPage,
+    CrawlResult,
+    RobotsPolicy,
+    SiteBlockedError,
+    http_error_message,
+)
 
 
 def _fake_crawler(url: str, settings: Settings, audit_id: str | None) -> CrawlResult:
@@ -234,3 +243,110 @@ def test_accessibility_advisory_never_changes_scores(monkeypatch, tmp_path) -> N
     assert on["a11y"] is not None
     assert on["a11y"]["status"] == "complete"
     assert any(issue["rule_id"] == "color-contrast" for issue in on["a11y"]["issues"])
+
+
+def _run_failed_audit(monkeypatch, crawler, psi_collector=_fake_psi) -> SimpleNamespace:
+    """Run the pipeline with `crawler` and return what was stored (the task re-raises)."""
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    TestingSession = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    monkeypatch.setattr(tasks, "SessionLocal", TestingSession)
+    monkeypatch.setattr(
+        tasks,
+        "get_settings",
+        lambda: Settings(
+            _env_file=None,
+            google_psi_api_key=None,
+            crawler_screenshots_enabled=False,
+            site_health_enabled=False,
+            screaming_frog_enabled=False,
+            google_oauth_client_id="",
+        ),
+    )
+    with TestingSession() as db:
+        job = AuditJob(
+            url="https://www.example.com/",
+            status=AuditStatus.QUEUED.value,
+            current_stage="Queued",
+            progress_pct=0,
+        )
+        db.add(job)
+        db.commit()
+        job_id = str(job.id)
+
+    with pytest.raises(SiteBlockedError):
+        tasks.run_collection_audit(job_id, crawler=crawler, psi_collector=psi_collector)
+
+    with TestingSession() as db:
+        stored = db.get(AuditJob, job_id)
+        assert stored is not None
+        return SimpleNamespace(
+            status=stored.status,
+            current_stage=stored.current_stage,
+            error_message=stored.error_message,
+            result=stored.result,
+        )
+
+
+def test_site_blocked_by_a_bot_check_fails_with_the_plain_message(monkeypatch) -> None:
+    # A homepage the site's bot check never let through fails the whole audit, and the visitor
+    # reads exactly the plain text under "Audit failed." (no "Could not render ..." wrapper).
+    def _blocked_crawler(url: str, settings: Settings, audit_id: str | None) -> CrawlResult:
+        raise SiteBlockedError(BOT_CHECK_BLOCKED_MESSAGE)
+
+    job = _run_failed_audit(monkeypatch, _blocked_crawler)
+
+    assert job.status == AuditStatus.FAILED.value
+    assert job.current_stage == "Audit collection failed"
+    assert job.error_message == BOT_CHECK_BLOCKED_MESSAGE
+    assert job.result is None
+
+
+def test_site_refusing_the_scanner_fails_with_the_plain_http_message(monkeypatch) -> None:
+    def _refused_crawler(url: str, settings: Settings, audit_id: str | None) -> CrawlResult:
+        raise SiteBlockedError(http_error_message(403))
+
+    job = _run_failed_audit(monkeypatch, _refused_crawler)
+
+    assert job.status == AuditStatus.FAILED.value
+    assert job.error_message == http_error_message(403)
+    assert "Could not render" not in (job.error_message or "")
+
+
+def test_a_bot_check_page_is_never_scored_or_sent_to_pagespeed(monkeypatch) -> None:
+    # Second guard behind the crawler: a crawl that still ended on SiteGround's challenge URL
+    # fails plainly, before PageSpeed is asked about it.
+    challenge = "https://www.example.com/.well-known/sgcaptcha/?r=%2F&y=ipc:203.0.113.9:1790749657"
+    psi_calls: list[list[str]] = []
+
+    def _challenge_crawler(url: str, settings: Settings, audit_id: str | None) -> CrawlResult:
+        result = _fake_crawler(url, settings, audit_id)
+        result.pages[0] = replace(result.pages[0], final_url=challenge, status_code=202)
+        result.final_url = challenge
+        return result
+
+    def _recording_psi(urls: list[str], settings: Settings) -> dict:
+        psi_calls.append(list(urls))
+        return _fake_psi(urls, settings)
+
+    job = _run_failed_audit(monkeypatch, _challenge_crawler, _recording_psi)
+
+    assert job.status == AuditStatus.FAILED.value
+    assert job.error_message == BOT_CHECK_BLOCKED_MESSAGE
+    assert psi_calls == []
+
+
+def test_psi_page_urls_never_include_a_bot_check_page() -> None:
+    settings = Settings(_env_file=None)
+    result = _fake_crawler("https://example.com/", settings, None)
+    child = replace(
+        result.pages[0],
+        url="https://example.com/about",
+        final_url="https://example.com/.well-known/captcha/?r=%2Fabout",
+    )
+    result.pages.append(child)
+    assert tasks._psi_page_urls(result, "https://example.com/") == ["https://example.com/"]
+
+    # Nothing usable left: fall back to the address the visitor submitted.
+    result.pages = [child]
+    assert tasks._psi_page_urls(result, "https://example.com/") == ["https://example.com/"]
