@@ -235,19 +235,24 @@ docker inspect --format '{{.Name}} restarts={{.RestartCount}} oom={{.State.OOMKi
 - **John:** GoHighLevel and operations.
 - **Code and deploys:** the BLC developers, through the repositories above.
 
-### 1.9 Known open items (29 September 2026)
+### 1.9 Known open items (30 September 2026)
 
-- **SiteGround's bot check flags this server's address.** The challenge URL carries
-  `ipr:173.255.206.170`. Seen on 29 September:
-  - **Audits (ai and seo):** a site hosted on SiteGround redirects the crawler to
-    `/.well-known/sgcaptcha/`, and the audit scores that challenge page instead of the site. BLC's own
-    site hit this on 29 September, and callfinch.com on the ai app on 28 August. Check
-    `report.metadata.final_url` before trusting a report. The crawler has no challenge-page detection
-    yet.
-  - **Blogs:** a read-only preflight from this server to Rick's SiteGround staging site got the
-    same challenge (HTML instead of JSON), so drafts cannot be delivered there until it clears. blogs'
-    `deploy/runbook-production.md` says these challenges are usually volume-triggered and clear
-    within a day. Allow-listing this address in SiteGround (Site Tools → Security) fixes it for good.
+- **SiteGround's bot protection flags this server's address.** Its challenge URL carries
+  `y=ipr:173.255.206.170` or `y=ipc:173.255.206.170` (seen since 29 September). By 30 September BLC's
+  own site answered this server with a plain 403.
+  - **Audits (ai and seo):** until the 30 September fix, an audit of such a site scored the challenge
+    page instead of the site (BLC's own site on 29 September; callfinch.com on the ai app on
+    28 August). Now the crawler waits up to `CRAWLER_CHALLENGE_WAIT_SECONDS` (15 s) for the site's own
+    check to let its browser through, and keeps the cookie for the other pages. If the check does not
+    clear, or the site refuses outright, the audit stops with a plain message instead of a report, and
+    once a site's check blocks a page the crawler opens no more of its pages. On seo's 1-CPU worker the
+    check often does not clear in time.
+  - **Blogs:** a recognised bot wall fails the delivery at once, with a message that says what to do,
+    instead of retrying for about half an hour. Press Retry after the host has whitelisted the server.
+  - **The real fix is on SiteGround's side.** Site Tools has no allow-list for its Anti-Bot AI. The
+    site's account owner, or a collaborator on the site, must ask SiteGround support to whitelist
+    173.255.206.170. This is needed for Rick's staging site (blogs) and BLC's own site. A site behind
+    Cloudflare may also need a Cloudflare IP Access "Allow" rule (Shayan).
 
 - There is no off-server backup copy, no uptime alerting and no Sentry.
 - Grow the box to 8 GB (Darius). Two browser audits at once, from ai and seo, push the box into swap.
