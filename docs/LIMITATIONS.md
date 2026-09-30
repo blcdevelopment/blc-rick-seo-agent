@@ -147,9 +147,12 @@ one report (PDF and DOCX). Known limits of that flow:
 - **Bot-protected sites.** When a host answers with a bot check (SiteGround, Cloudflare,
   AWS WAF, Vercel), the crawler waits up to `CRAWLER_CHALLENGE_WAIT_SECONDS` (default 15) for
   the site's own check to let it through, and keeps its cookie for the other pages. It never
-  solves a CAPTCHA or disguises itself. If the check does not clear, the audit fails with a
+  solves a CAPTCHA or disguises itself. If the check blocks the homepage, the audit fails with a
   plain message instead of scoring the check page, and an HTTP error (for example a firewall's
-  403) fails with plain text too. A host that has flagged the server must allow-list it.
+  403) fails with plain text too. If it blocks another page, that page is listed as failed with
+  a short reason and the pages not opened yet are skipped, since each would meet the same check.
+  A link that leads to another website's check fails at once, without waiting, and stops
+  nothing. A host that has flagged the server must allow-list it.
 - **Form detection errs toward credit (accepted tradeoff, 2026-07-03).** Popup/embedded
   lead forms are detected via provider signatures matched anywhere in the page HTML and a
   bounded runtime frame pass, so (a) a page merely *mentioning* a form provider (e.g. a blog
@@ -214,10 +217,14 @@ one report (PDF and DOCX). Known limits of that flow:
   the bot-block breaker (429 is a *response*, so it resets the consecutive-transport-failure
   counter) — such a site ends `complete`-with-few-checks or times out, rather than
   `partial: bot_blocked`.
-- **A bot check stops the sweep at once.** A response with a documented bot-check marker
-  (SiteGround's `sg-captcha`, Cloudflare's `cf-mitigated`, AWS WAF, Vercel) is not counted as
-  checked and its `x-robots-tag` is ignored; the sweep sends no further request and ends
-  `partial: bot_blocked`. `cf-ray` and `server: cloudflare` alone never count.
+- **A bot check on the audited site stops the sweep.** When the site itself (a page or its
+  sitemap) answers with a documented bot-check marker (SiteGround's `sg-captcha`, Cloudflare's
+  `cf-mitigated`, AWS WAF, Vercel), that answer is not counted as checked and its
+  `x-robots-tag` is ignored. The check is never retried, even when it answers 429; the sweep
+  starts no new request (one already on its way still completes) and ends
+  `partial: bot_blocked`. An internal link that redirects to another website's check is left
+  unchecked, and an outbound link answered by one is inconclusive: neither is reported as
+  broken, and neither stops the sweep. `cf-ray` and `server: cloudflare` alone never count.
 
 ---
 

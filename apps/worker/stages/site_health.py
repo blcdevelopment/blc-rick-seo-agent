@@ -147,6 +147,20 @@ def _bot_check_label(response: httpx.Response) -> str | None:
     return found[0] if found else None
 
 
+# Where a bot check answered (the last element of CheckResult): on the website that was asked,
+# or on another website a redirect led to (an internal link to a client portal on a SaaS host).
+_BOT_CHECK_SAME_SITE = "same_site"
+_BOT_CHECK_OTHER_SITE = "other_site"
+
+
+def _bot_check_where(response: httpx.Response, url: str) -> str | None:
+    if _bot_check_label(response) is None:
+        return None
+    if is_same_site(url, str(response.url)):
+        return _BOT_CHECK_SAME_SITE
+    return _BOT_CHECK_OTHER_SITE
+
+
 def _retry_after_seconds(response: httpx.Response, attempt: int) -> float:
     raw = (response.headers.get("retry-after") or "").strip()
     try:
@@ -386,6 +400,7 @@ async def _collect(
             "skipped_budget": skipped_budget,
             "browser_recheck_ok": checks.get("browser_recheck_ok"),
             "bot_check_internal_urls": checks.get("bot_check_internal", 0),
+            "bot_check_other_site_internal_urls": checks.get("bot_check_other_site_internal", 0),
         },
         "notes": notes,
         "files": [],
@@ -598,8 +613,10 @@ async def _fetch_sitemap(
         return set(), "skipped"
     except httpx.HTTPError:
         return set(), "unavailable"
-    if _bot_check_label(response) is not None:
-        # Not an unparseable sitemap: the site's bot check answered in its place.
+    if _bot_check_label(response) is not None and is_same_site(site_url, str(response.url)):
+        # Not an unparseable sitemap: the site's own bot check answered in its place. (Another
+        # website's check, reached through a redirect, walls nothing: it is handled below like
+        # any other answer that is not a sitemap.)
         return set(), _SITEMAP_BOT_CHECK
     if response.status_code == 404:
         return set(), "missing"
@@ -688,6 +705,8 @@ async def _sweep(
         "waf_signals": 0,
         # Internal URLs the site's bot check answered instead of the page (not checked).
         "bot_check_internal": 0,
+        # Internal URLs that redirect to ANOTHER website's bot check (not checked, no wall).
+        "bot_check_other_site_internal": 0,
     }
     error_classes: dict[str, int] = defaultdict(int)
     # Circuit breaker: consecutive INTERNAL transport failures mean the host (or its
@@ -740,6 +759,13 @@ async def _sweep(
                 async with lock:
                     counters["blocked"] += 1
                 return
+            async with lock:
+                # Tested again right before sending: this lane passed the first test before its
+                # pacing sleep, and another lane's answer may have tripped the breaker since.
+                # (A request already on its way when the breaker trips still completes.)
+                if breaker["tripped"]:
+                    counters["skipped_breaker"] += 1
+                    return
             try:
                 (
                     status_code,
@@ -789,7 +815,7 @@ async def _sweep(
             if status_code is None:
                 return
             if internal:
-                if bot_check:
+                if bot_check == _BOT_CHECK_SAME_SITE:
                     # The site's bot check answered instead of the page (SiteGround's 202 also
                     # says x-robots-tag: noindex, which is about the check, not the page). Like
                     # a final 429 it is not a checked or answered URL and feeds no finding. Unlike
@@ -799,6 +825,14 @@ async def _sweep(
                     counters["bot_check_internal"] += 1
                     breaker["tripped"] = True
                     breaker["bot_check"] = True
+                    return
+                if bot_check == _BOT_CHECK_OTHER_SITE:
+                    # The link redirects to ANOTHER website's bot check (a client portal on a
+                    # SaaS host, say). The audited site answered, so this walls nothing, and the
+                    # other site's check says nothing about the link: unchecked like a final
+                    # 429, never a finding, and the sweep goes on.
+                    counters["internal_checked"] -= 1
+                    counters["bot_check_other_site_internal"] += 1
                     return
                 # The client's own site: every error is a reliable, actionable
                 # signal because we control the request.
@@ -946,7 +980,9 @@ async def _request_polite(
         client, method, url, settings, host_allowed_cache, global_slot, deadline
     )
     for attempt in range(_MAX_RATE_LIMIT_RETRIES):
-        if response.status_code != _RATE_LIMIT_STATUS:
+        # A bot check that answers 429 (Vercel's checkpoint does) is no rate limit: asking again
+        # would only meet the check again.
+        if response.status_code != _RATE_LIMIT_STATUS or _bot_check_label(response) is not None:
             break
         wait_seconds = _retry_after_seconds(response, attempt)
         if deadline is not None and time.monotonic() + wait_seconds > deadline:
@@ -960,10 +996,10 @@ async def _request_polite(
     return response, hops
 
 
-CheckResult = tuple[int | None, str | None, str | None, int, str | None, bool, bool]
+CheckResult = tuple[int | None, str | None, str | None, int, str | None, bool, str | None]
 
 
-def _check_outcome(response: httpx.Response, hops: int) -> CheckResult:
+def _check_outcome(response: httpx.Response, hops: int, url: str) -> CheckResult:
     return (
         response.status_code,
         response.headers.get("x-robots-tag"),
@@ -971,7 +1007,7 @@ def _check_outcome(response: httpx.Response, hops: int) -> CheckResult:
         hops,
         None,
         _looks_waf(response),
-        _bot_check_label(response) is not None,
+        _bot_check_where(response, url),
     )
 
 
@@ -983,7 +1019,7 @@ def _check_failure(exc: httpx.HTTPError) -> CheckResult:
         0,
         _error_class(exc),
         False,
-        False,
+        None,
     )
 
 
@@ -996,20 +1032,21 @@ async def _check_url(
     deadline: float | None = None,
 ) -> CheckResult:
     """Return (status_code, x_robots_tag_header, error, redirect_hops, error_class,
-    waf_suspected, bot_check).
+    waf_suspected, bot_check), bot_check being None, _BOT_CHECK_SAME_SITE or
+    _BOT_CHECK_OTHER_SITE.
 
     GET is retried only when HEAD specifically is the problem (servers that
     reject or mishandle HEAD, or rate-limit it with a persistent 429). Timeouts and
     connection failures would fail a GET identically, so retrying them would just
-    double the worst-case latency. A bot check is never retried either: a GET would only
-    meet it again.
+    double the worst-case latency. A bot check is never retried either, not even one that
+    answers 429: any further request would only meet it again.
     """
     try:
         response, hops = await _request_polite(
             client, "HEAD", url, settings, host_allowed_cache, global_slot, deadline
         )
         if _bot_check_label(response) is not None:
-            return _check_outcome(response, hops)
+            return _check_outcome(response, hops, url)
         if response.status_code in _RETRY_GET_STATUSES:
             response, hops = await _request_polite(
                 client, "GET", url, settings, host_allowed_cache, global_slot, deadline
@@ -1022,7 +1059,7 @@ async def _check_url(
             response, hops = await _slotted_request(
                 client, "GET", url, settings, host_allowed_cache, global_slot, deadline
             )
-        return _check_outcome(response, hops)
+        return _check_outcome(response, hops, url)
     except httpx.RemoteProtocolError:
         try:
             # Same global slot + deadline as every other request — this fallback once ran
@@ -1030,7 +1067,7 @@ async def _check_url(
             response, hops = await _request_polite(
                 client, "GET", url, settings, host_allowed_cache, global_slot, deadline
             )
-            return _check_outcome(response, hops)
+            return _check_outcome(response, hops, url)
         except httpx.HTTPError as exc:
             return _check_failure(exc)
     except httpx.HTTPError as exc:

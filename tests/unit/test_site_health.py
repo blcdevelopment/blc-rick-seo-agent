@@ -1086,3 +1086,96 @@ def test_bot_check_on_an_outbound_link_is_inconclusive_not_broken() -> None:
     assert summary.get("server_error_external_urls", 0) == 0
     assert counters["bot_blocked"] is False
     assert counters["internal_conclusive"] == 1
+
+
+def _siteground_answer(sent: list[str]):
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(f"{request.method} {request.url.path}")
+        headers = {"sg-captcha": "challenge", "x-robots-tag": "noindex"}
+        return httpx.Response(202, headers=headers, request=request)
+
+    return handler
+
+
+def test_default_lanes_start_no_request_after_the_check_answered() -> None:
+    # Two lanes per host with pacing, as in production (2 lanes, ~750 ms): the second lane passes
+    # the breaker test, then sleeps out its spacing while the first answer trips the breaker. It
+    # tests again before sending, so no second unsolved check goes out.
+    sent: list[str] = []
+    counters, _summary = _sweep_with(
+        _siteground_answer(sent),
+        internal_urls=[f"http://site.example/p{index}" for index in range(6)],
+        # The second lane sleeps 375-625 ms: far longer than the first answer takes here.
+        site_health_request_delay_ms=500,
+    )
+    assert _settings().site_health_per_host_concurrency == 2
+    assert sent == ["HEAD /p0"]
+    assert counters["bot_check_internal"] == 1
+    assert counters["skipped_breaker"] == 5
+
+
+def test_a_bot_check_that_answers_429_is_asked_once() -> None:
+    # Vercel's checkpoint answers 429 + x-vercel-mitigated: challenge. That is no rate limit to
+    # wait out: the polite 429 retries and the GET fallback would only meet the check again.
+    sent: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(f"{request.method} {request.url.path}")
+        headers = {"x-vercel-mitigated": "challenge", "retry-after": "1"}
+        return httpx.Response(429, headers=headers, request=request)
+
+    counters, _summary = _sweep_with(
+        handler,
+        internal_urls=["http://site.example/a", "http://site.example/b"],
+        site_health_per_host_concurrency=1,
+    )
+    assert sent == ["HEAD /a"]
+    assert counters["bot_check_internal"] == 1
+    assert counters["rate_limited_internal"] == 0
+    assert counters["bot_blocked"] is True
+
+
+def _portal_behind_another_websites_check(request: httpx.Request) -> httpx.Response:
+    """site.example links /client-portal, which redirects to a SaaS portal behind Cloudflare's
+    challenge; /broken is really gone; everything else is fine."""
+    if request.url.host == "portal.saas.example":
+        headers = {"cf-mitigated": "challenge", "server": "cloudflare"}
+        return httpx.Response(403, headers=headers, request=request)
+    if request.url.path in {"/client-portal", "/sitemap.xml"}:
+        location = f"https://portal.saas.example{request.url.path}"
+        return httpx.Response(302, headers={"location": location}, request=request)
+    if request.url.path == "/broken":
+        return httpx.Response(404, request=request)
+    return httpx.Response(200, request=request)
+
+
+def test_an_internal_link_to_another_websites_check_walls_nothing() -> None:
+    # The audited site answered (a redirect); the other website's check says nothing about the
+    # link. It is left unchecked, never a finding, and the sweep goes on to find the real 404.
+    counters, summary = _sweep_with(
+        _portal_behind_another_websites_check,
+        internal_urls=[
+            "http://site.example/client-portal",
+            "http://site.example/a",
+            "http://site.example/broken",
+        ],
+        site_health_per_host_concurrency=1,
+    )
+    assert counters["bot_blocked"] is False
+    assert counters["bot_check_internal"] == 0
+    assert counters["bot_check_other_site_internal"] == 1
+    assert counters["skipped_breaker"] == 0
+    assert counters["internal_checked"] == 2
+    assert counters["internal_conclusive"] == 2
+    assert summary["client_error_internal_urls"] == 1
+
+
+def test_a_sitemap_redirected_to_another_websites_check_walls_nothing() -> None:
+    async def run() -> tuple[list[str], str]:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(_portal_behind_another_websites_check),
+            follow_redirects=False,
+        ) as client:
+            return await site_health._sitemap_urls(client, "http://site.example/", _settings(), {})
+
+    assert asyncio.run(run()) == ([], "http_403")

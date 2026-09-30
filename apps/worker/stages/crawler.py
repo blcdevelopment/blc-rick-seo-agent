@@ -31,8 +31,19 @@ class CrawlerError(RuntimeError):
 class SiteBlockedError(CrawlerError):
     """The site's bot check, its firewall or an HTTP error kept the audit browser off the page.
 
-    A failed audit shows this text word for word to the visitor who ran it (tasks.py stores
-    ``str(exc)`` as the job's ``error_message``), so it stays short, plain and non-technical."""
+    ``str(exc)`` is the whole-audit text: when the homepage is blocked, the visitor who ran the
+    audit reads it word for word (tasks.py stores it as the job's ``error_message``), so it stays
+    short, plain and non-technical. ``page_reason`` describes one page only: crawl_site records it
+    for an internal page that failed inside an audit that went on, and the report prints it in its
+    "Failed internal pages" table. ``bot_check`` names the audited site's own bot check when that
+    is what blocked the page (None for an HTTP error, or for another website's check)."""
+
+    def __init__(
+        self, message: str, *, page_reason: str | None = None, bot_check: str | None = None
+    ) -> None:
+        super().__init__(message)
+        self.page_reason = page_reason or message
+        self.bot_check = bot_check
 
 
 # Shown when a bot check did not let the browser through (it never cleared, or only a person
@@ -42,6 +53,10 @@ BOT_CHECK_BLOCKED_MESSAGE = (
     "instead of scoring the security screen. If this is your site, ask your web host to allow "
     "our scanner, then try again."
 )
+# The same two cases for ONE internal page of an audit that went on: the report prints these
+# next to the page's address, so they never speak of the whole audit.
+BOT_CHECK_PAGE_REASON = "Blocked by the site's security check"
+OTHER_SITE_BOT_CHECK_PAGE_REASON = "Leads to another website's security check"
 
 
 def http_error_message(status_code: int) -> str:
@@ -60,6 +75,33 @@ def http_error_message(status_code: int) -> str:
             "again."
         )
     return f"The website returned an error (HTTP {status_code}). Please try again later."
+
+
+def http_error_page_reason(status_code: int) -> str:
+    """Short reason for one internal page that answered with an HTTP error status."""
+    if status_code in {401, 403}:
+        return f"Refused by the site (HTTP {status_code})"
+    if status_code == 429:
+        return "The site asked us to slow down (HTTP 429)"
+    if status_code in {404, 410}:
+        return f"Page not found (HTTP {status_code})"
+    return f"The site returned an error (HTTP {status_code})"
+
+
+def _http_error(status_code: int) -> SiteBlockedError:
+    return SiteBlockedError(
+        http_error_message(status_code), page_reason=http_error_page_reason(status_code)
+    )
+
+
+def _bot_check_error(label: str, *, own_site: bool) -> SiteBlockedError:
+    """A page blocked by a bot check: the audited site's own (``bot_check`` names it, and
+    crawl_site stops opening pages) or another website's that a link led to (no wall)."""
+    if own_site:
+        return SiteBlockedError(
+            BOT_CHECK_BLOCKED_MESSAGE, page_reason=BOT_CHECK_PAGE_REASON, bot_check=label
+        )
+    return SiteBlockedError(BOT_CHECK_BLOCKED_MESSAGE, page_reason=OTHER_SITE_BOT_CHECK_PAGE_REASON)
 
 
 # Bot checks ("interstitials") that some hosts answer with instead of the page. Only exact,
@@ -680,6 +722,7 @@ class _DocumentWatch:
         self._page = page
         self.latest: Any = None
         self.seen: str | None = None
+        self.crashed = False
 
     def on_response(self, response: Any) -> None:
         # An event callback must never raise into Playwright's event dispatch.
@@ -694,6 +737,9 @@ class _DocumentWatch:
                 if found is not None:
                     self.seen = found[0]
 
+    def on_crash(self, _page: Any) -> None:
+        self.crashed = True
+
 
 async def _interstitial_now(
     page: Any, documents: _DocumentWatch, response: Any
@@ -703,7 +749,17 @@ async def _interstitial_now(
     try:
         title = await page.title()
     except playwright_api.Error:
+        if documents.crashed or page.is_closed():
+            # A crashed or closed page is not navigating: fail now, not after the whole budget.
+            raise
         # title() fails while a navigation (the check's own redirect) replaces the document.
+        # If the latest document is itself a check (its address or headers say so), the check
+        # is still in the way; otherwise the page is just navigating.
+        current = documents.latest or response
+        if current is not None:
+            found = interstitial_reason(current.url, current.status, current.headers, None)
+            if found is not None:
+                return found
         return _STILL_NAVIGATING
     # Read the latest document only now: it may have changed while title() was awaited.
     current = documents.latest or response
@@ -712,8 +768,28 @@ async def _interstitial_now(
     return interstitial_reason(page.url, status, headers, title)
 
 
+async def _settled_look(
+    page: Any, documents: _DocumentWatch, response: Any
+) -> tuple[str, str] | None:
+    """Let the page that replaced a bot check finish loading, then look at it again."""
+    with suppress(playwright_api.Error):
+        await page.wait_for_load_state("domcontentloaded", timeout=_SETTLE_TIMEOUT_MS)
+    with suppress(playwright_api.Error):
+        await page.wait_for_load_state("networkidle", timeout=_SETTLE_TIMEOUT_MS)
+    return await _interstitial_now(page, documents, response)
+
+
+def _on_another_site(url: str, page: Any, current: Any) -> bool:
+    """True when the page asked for has ended up on another website (an internal link to a
+    client portal on a third party's host, say). The page's address and its latest document
+    must both be elsewhere, so a navigation caught half-way never counts."""
+    addresses = [page.url] + ([current.url] if current is not None else [])
+    return not any(is_same_site(url, address) for address in addresses)
+
+
 async def _wait_out_interstitial(
     page: Any,
+    url: str,
     response: Any,
     documents: _DocumentWatch,
     settings: Settings,
@@ -723,12 +799,17 @@ async def _wait_out_interstitial(
 
     Returns the final document's response and the label of the check that was passed (None
     when there was none). Raises SiteBlockedError at once for a check only a person can clear
-    (a CAPTCHA or block page), and when a check is still showing after the budget. Nothing is
-    disguised or solved, and a blocked page is never retried: each attempt is one more
-    unsolved check on this server's record with the host."""
+    (a CAPTCHA or block page) and for another website's check (``url`` led there; that site is
+    not being audited), and when the site's own check is still showing after the budget.
+    Nothing is disguised or solved, and a blocked page is never retried: each attempt is one
+    more unsolved check on this server's record with the host."""
     loop = asyncio.get_running_loop()
     deadline = loop.time() + max(0, settings.crawler_challenge_wait_seconds)
     current = await _interstitial_now(page, documents, response)
+    if current is None and documents.seen is not None:
+        # The check cleared before the first look (a fast CPU passes it inside the networkidle
+        # wait, which may have ended mid-load): settle like any other passed check.
+        current = await _settled_look(page, documents, response)
     if current is None:
         return documents.latest or response, documents.seen
     label = documents.seen
@@ -736,14 +817,17 @@ async def _wait_out_interstitial(
     # counts as checking only when a check showed up during this load.
     checking = label is not None
     while True:
+        elsewhere = _on_another_site(url, page, documents.latest or response)
         if current is not _STILL_NAVIGATING:
+            if elsewhere:
+                raise _bot_check_error(current[0], own_site=False)
             label = label or current[0]
             checking = True
             if current[1] == INTERSTITIAL_TERMINAL:
-                raise SiteBlockedError(BOT_CHECK_BLOCKED_MESSAGE)
+                raise _bot_check_error(current[0], own_site=True)
         if loop.time() >= deadline:
             if checking:
-                raise SiteBlockedError(BOT_CHECK_BLOCKED_MESSAGE)
+                raise _bot_check_error(label or current[0], own_site=not elsewhere)
             # No check in the way, just a page still navigating: capture it as before.
             return documents.latest or response, label
         await asyncio.sleep(_INTERSTITIAL_POLL_SECONDS)
@@ -751,11 +835,7 @@ async def _wait_out_interstitial(
         if current is None:
             # The check let the browser through: let the real page settle, then look again.
             checking = False
-            with suppress(playwright_api.Error):
-                await page.wait_for_load_state("domcontentloaded", timeout=_SETTLE_TIMEOUT_MS)
-            with suppress(playwright_api.Error):
-                await page.wait_for_load_state("networkidle", timeout=_SETTLE_TIMEOUT_MS)
-            current = await _interstitial_now(page, documents, response)
+            current = await _settled_look(page, documents, response)
             if current is None:
                 return documents.latest or response, label
 
@@ -773,6 +853,7 @@ async def _render_page(
         documents = _DocumentWatch(page)
         # Registered before goto, so even the first document (a bot check's own page) is seen.
         page.on("response", documents.on_response)
+        page.on("crash", documents.on_crash)
         response = await page.goto(
             url,
             wait_until="domcontentloaded",
@@ -785,15 +866,22 @@ async def _render_page(
         # own check BEFORE the status check, so a page reached after it records its own status
         # (200), not the check's (202), and the check's page is never captured or scored.
         response, passed_interstitial = await _wait_out_interstitial(
-            page, response, documents, settings
+            page, url, response, documents, settings
         )
 
         status_code = response.status if response else None
         if is_failed_http_status(status_code):
-            raise SiteBlockedError(http_error_message(status_code))
+            raise _http_error(status_code)
 
         html = await page.content()
         title = await page.title()
+        # One last look at what was captured: a check that only its title gives away (the page
+        # was still navigating when the wait ended) must not be scored either.
+        captured = interstitial_reason(
+            page.url, status_code, response.headers if response else None, title
+        )
+        if captured is not None:
+            raise _bot_check_error(captured[0], own_site=not _on_another_site(url, page, response))
         text = " ".join((await page.locator("body").inner_text(timeout=3000)).split())
         screenshot_path, screenshot_error = await _capture_screenshot(
             page,
@@ -991,9 +1079,24 @@ async def crawl_site(url: str, settings: Settings, audit_id: str | None = None) 
                 target_candidates.append(candidate)
 
             semaphore = asyncio.Semaphore(settings.crawler_concurrency)
+            # Set once the site's own bot check blocked a page. Every page not opened yet would
+            # meet the same check, and each attempt is one more unsolved check on this server's
+            # record with the host, so the rest are skipped instead.
+            walled_by: str | None = None
 
             async def crawl_candidate(candidate: LinkCandidate) -> CrawledPage | None:
+                nonlocal walled_by
                 async with semaphore:
+                    if walled_by is not None:
+                        skipped_pages.append(
+                            {
+                                "url": candidate.url,
+                                "status": "skipped",
+                                "reason": "stopped_after_bot_check",
+                                "source_url": homepage.final_url,
+                            }
+                        )
+                        return None
                     child_context = await _new_crawl_context(
                         browser, settings, resolve_cache, storage_state=storage_state
                     )
@@ -1009,11 +1112,17 @@ async def crawl_site(url: str, settings: Settings, audit_id: str | None = None) 
                     except SoftTimeLimitExceeded:
                         raise
                     except Exception as exc:
+                        reason = str(exc)
+                        if isinstance(exc, SiteBlockedError):
+                            # The short reason for this one page: the report prints it next to
+                            # the page, so it must not read like the whole audit failed.
+                            reason = exc.page_reason
+                            walled_by = walled_by or exc.bot_check
                         failed_pages.append(
                             {
                                 "url": candidate.url,
                                 "status": "failed",
-                                "reason": str(exc),
+                                "reason": reason,
                                 "source_url": homepage.final_url,
                             }
                         )

@@ -1,7 +1,9 @@
 import asyncio
+import functools
 import ipaddress
 import time
 from types import SimpleNamespace
+from urllib.parse import urlparse
 
 import httpx
 import pytest
@@ -10,13 +12,16 @@ from apps.shared.config import Settings
 from apps.worker.stages import crawler
 from apps.worker.stages.crawler import (
     BOT_CHECK_BLOCKED_MESSAGE,
+    BOT_CHECK_PAGE_REASON,
     INTERSTITIAL_TERMINAL,
     INTERSTITIAL_WAITABLE,
+    OTHER_SITE_BOT_CHECK_PAGE_REASON,
     CrawlerError,
     SiteBlockedError,
     assert_crawlable_url,
     discover_internal_links,
     http_error_message,
+    http_error_page_reason,
     interstitial_reason,
     is_failed_http_status,
     is_interstitial_url,
@@ -419,6 +424,14 @@ _SG_CHALLENGE_URL = (
             "Attention Required! | Cloudflare",
             ("Cloudflare block page", INTERSTITIAL_TERMINAL),
         ),
+        # Terminal wins even when a waitable marker is found first (a header before the title).
+        (
+            "https://www.example.com/",
+            403,
+            {"cf-mitigated": "challenge"},
+            "Attention Required! | Cloudflare",
+            ("Cloudflare block page", INTERSTITIAL_TERMINAL),
+        ),
         # AWS WAF: challenge (202) can clear itself, CAPTCHA (405) cannot.
         (
             "https://www.example.com/",
@@ -517,15 +530,40 @@ def test_visitor_messages_are_short_and_plain() -> None:
     )
 
 
+def test_page_reasons_speak_of_one_page_only() -> None:
+    # What the report's "Failed internal pages" table prints next to a page that failed inside
+    # an audit that went on: short, and never the wording of a failed audit.
+    reasons = {
+        403: "Refused by the site (HTTP 403)",
+        401: "Refused by the site (HTTP 401)",
+        429: "The site asked us to slow down (HTTP 429)",
+        404: "Page not found (HTTP 404)",
+        410: "Page not found (HTTP 410)",
+        500: "The site returned an error (HTTP 500)",
+    }
+    assert {status: http_error_page_reason(status) for status in reasons} == reasons
+    assert BOT_CHECK_PAGE_REASON == "Blocked by the site's security check"
+    assert OTHER_SITE_BOT_CHECK_PAGE_REASON == "Leads to another website's security check"
+    # A whole-audit failure (the homepage) keeps the visitor text as its page reason too.
+    assert SiteBlockedError(BOT_CHECK_BLOCKED_MESSAGE).page_reason == BOT_CHECK_BLOCKED_MESSAGE
+
+
 class _FakeResponse:
     """A Playwright Response double (sync `headers`, like Response.headers)."""
 
-    def __init__(self, url: str, status: int, headers: dict | None = None, frame=None) -> None:
+    def __init__(
+        self,
+        url: str,
+        status: int,
+        headers: dict | None = None,
+        frame=None,
+        navigation: bool = True,
+    ) -> None:
         self.url = url
         self.status = status
         self.headers = {key.lower(): value for key, value in (headers or {}).items()}
         self.frame = frame
-        self.request = SimpleNamespace(is_navigation_request=lambda: True)
+        self.request = SimpleNamespace(is_navigation_request=lambda: navigation)
 
 
 class _ChallengePage:
@@ -536,7 +574,9 @@ class _ChallengePage:
     browser lands on the real page. `falls_back_after` sends it to SiteGround's human CAPTCHA
     instead, `navigating_looks` makes the first title() calls fail mid-navigation, and
     `navigating_after_clear` does the same right after the real page loaded (a site's own JS
-    redirect), with `settle_seconds` spent in each wait_for_load_state()."""
+    redirect), with `settle_seconds` spent in each wait_for_load_state(). `first_url` is where
+    a redirect lands the first document (another website, say), `body` the page's markup, and
+    `breaks` ("crashed" or "closed") makes every title() fail the way a dead page does."""
 
     BASE = "https://www.example.com"
 
@@ -551,13 +591,16 @@ class _ChallengePage:
         first_status: int = 202,
         first_headers: dict | None = None,
         first_title: str = "",
+        first_url: str | None = None,
         real_status: int = 200,
+        body: str = "<h1>Home</h1>",
+        breaks: str | None = None,
     ) -> None:
         self.main_frame = object()
         self.frames = [self.main_frame]
         self.url = "about:blank"
         self._title = ""
-        self._listeners: list = []
+        self._listeners: dict[str, list] = {"response": [], "crash": []}
         self._clears_after = clears_after
         self._falls_back_after = falls_back_after
         self._navigating_looks = navigating_looks
@@ -568,22 +611,30 @@ class _ChallengePage:
             _SG_202_HEADERS if first_headers is None else first_headers,
             first_title,
         )
+        self._first_url = first_url
         self._real_status = real_status
+        self._body = body
+        self._breaks = breaks
         self.looks = 0
         self.closed = False
 
     def on(self, event: str, callback) -> None:
-        assert event == "response"
-        self._listeners.append(callback)
+        self._listeners[event].append(callback)
 
     def _emit(self, response: _FakeResponse) -> None:
-        for callback in self._listeners:
+        for callback in self._listeners["response"]:
             callback(response)
+
+    def is_closed(self) -> bool:
+        return self.closed
 
     async def goto(self, url: str, **_kwargs) -> _FakeResponse:
         status, headers, title = self._first
-        self.url, self._title = url, title
-        first = _FakeResponse(url, status, headers, frame=self.main_frame)
+        landed = self._first_url or url
+        if landed != url:  # the redirect's own 3xx reaches the listener too
+            self._emit(_FakeResponse(url, 302, {"location": landed}, frame=self.main_frame))
+        self.url, self._title = landed, title
+        first = _FakeResponse(landed, status, headers, frame=self.main_frame)
         self._emit(first)
         if status == 202:  # SiteGround: the meta refresh lands on the Robot Challenge Screen
             self.url, self._title = _SG_CHALLENGE_URL, "Robot Challenge Screen"
@@ -597,6 +648,13 @@ class _ChallengePage:
 
     async def title(self) -> str:
         self.looks += 1
+        if self._breaks == "crashed":
+            for callback in self._listeners["crash"]:
+                callback(self)
+            raise crawler.playwright_api.Error("Target crashed")
+        if self._breaks == "closed":
+            self.closed = True
+            raise crawler.playwright_api.Error("Target page, context or browser has been closed")
         if self.looks <= self._navigating_looks:
             raise crawler.playwright_api.Error("Execution context was destroyed")
         cleared_at = None if self._clears_after is None else self._clears_after + 1
@@ -605,7 +663,11 @@ class _ChallengePage:
         ):
             raise crawler.playwright_api.Error("Execution context was destroyed")
         if self._clears_after is not None and self.looks == self._clears_after + 1:
-            self._emit(_FakeResponse(f"{self.BASE}/.well-known/sgcaptcha/?sol=1", 302))
+            self._emit(
+                _FakeResponse(
+                    f"{self.BASE}/.well-known/sgcaptcha/?sol=1", 302, frame=self.main_frame
+                )
+            )
             self.url, self._title = f"{self.BASE}/", "Acme Builders | Home"
             self._emit(_FakeResponse(self.url, self._real_status, {}, frame=self.main_frame))
         if self._falls_back_after is not None and self.looks == self._falls_back_after + 1:
@@ -616,7 +678,7 @@ class _ChallengePage:
         return self._title
 
     async def content(self) -> str:
-        return f"<html><head><title>{self._title}</title></head><body><h1>Home</h1></body></html>"
+        return f"<html><head><title>{self._title}</title></head><body>{self._body}</body></html>"
 
     def locator(self, _selector: str):
         page = self
@@ -657,9 +719,11 @@ def _wait(page: _ChallengePage, seconds: float):
     async def run():
         documents = crawler._DocumentWatch(page)
         page.on("response", documents.on_response)
-        response = await page.goto(f"{page.BASE}/")
+        page.on("crash", documents.on_crash)
+        url = f"{page.BASE}/"
+        response = await page.goto(url)
         return await crawler._wait_out_interstitial(
-            page, response, documents, _wait_settings(seconds)
+            page, url, response, documents, _wait_settings(seconds)
         )
 
     return asyncio.run(run())
@@ -681,7 +745,9 @@ def test_wait_counts_a_check_passed_before_the_first_look(fast_polls) -> None:
     response, passed = _wait(page, seconds=5)
     assert response.status == 200
     assert passed == "SiteGround anti-bot check"
-    assert page.looks == 1  # no waiting at all: the first look is already the real page
+    # No polling: the first look is already the real page. It gets one more look once it has
+    # settled, as after any passed check (the networkidle wait may have ended mid-load).
+    assert page.looks == 2
 
 
 def test_wait_gives_up_with_the_plain_message_when_the_check_stays(fast_polls) -> None:
@@ -723,12 +789,61 @@ def test_a_passed_check_is_not_called_blocked_when_the_page_keeps_navigating(fas
 
 
 def test_wait_rides_out_a_navigating_page_without_calling_it_a_check(fast_polls) -> None:
-    # title() fails while an ordinary page is still navigating: that is no bot check.
+    # title() fails while an ordinary page is still navigating: that is no bot check, and no
+    # page to capture yet either. Two failed looks, one that works, one after it settled.
     page = _ChallengePage(
         first_status=200, first_headers={}, first_title="Acme Builders", navigating_looks=2
     )
     response, passed = _wait(page, seconds=5)
     assert (response.status, passed) == (200, None)
+    assert page.looks == 4
+
+
+def test_a_check_page_mid_navigation_is_never_captured(fast_polls) -> None:
+    # title() fails at the first looks while SiteGround's meta refresh and solve redirect replace
+    # the document: the check is still running, so nothing is captured until the real page.
+    page = _ChallengePage(clears_after=3, navigating_looks=2)
+    crawled = _render(page, seconds=5)
+    assert crawled.title == "Acme Builders | Home"
+    assert crawled.final_url == f"{page.BASE}/"
+    assert crawled.passed_interstitial == "SiteGround anti-bot check"
+
+
+def test_document_watch_keeps_only_the_main_frames_final_documents() -> None:
+    # The page's status and headers come from `latest`, so only the main frame's own documents
+    # may set it, and no redirect. Cloudflare's traps sit under its challenge path prefix: the
+    # JS-detection script on every page it proxies (a sub-resource) and the Turnstile widget
+    # (a child frame's document).
+    page = SimpleNamespace(main_frame=object())
+    documents = crawler._DocumentWatch(page)
+    documents.on_response(
+        _FakeResponse(
+            "https://www.example.com/cdn-cgi/challenge-platform/scripts/jsd/main.js",
+            200,
+            frame=page.main_frame,
+            navigation=False,
+        )
+    )
+    documents.on_response(
+        _FakeResponse(
+            "https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/g/turnstile/if/ov2",
+            200,
+            frame=object(),
+        )
+    )
+    documents.on_response(
+        _FakeResponse(
+            "https://www.example.com/.well-known/sgcaptcha/?sol=1",
+            302,
+            {"sg-captcha": "challenge"},
+            frame=page.main_frame,
+        )
+    )
+    assert (documents.latest, documents.seen) == (None, None)
+
+    home = _FakeResponse("https://www.example.com/", 200, frame=page.main_frame)
+    documents.on_response(home)
+    assert (documents.latest, documents.seen) == (home, None)
 
 
 def _render(page: _ChallengePage, seconds: float):
@@ -776,6 +891,268 @@ def test_render_page_error_after_a_passed_check_uses_the_final_status(fast_polls
     with pytest.raises(SiteBlockedError) as excinfo:
         _render(page, seconds=5)
     assert str(excinfo.value) == http_error_message(404)
+    assert excinfo.value.page_reason == "Page not found (HTTP 404)"
+    assert excinfo.value.bot_check is None
+
+
+def test_render_page_waits_out_a_cloudflare_challenge_that_answers_403(fast_polls) -> None:
+    # Cloudflare's managed challenge answers 403 first. Once it clears, the page records the
+    # real document's status: not the challenge's 403 ("It refused our scanner").
+    page = _ChallengePage(
+        first_status=403,
+        first_headers={"cf-mitigated": "challenge"},
+        first_title="Just a moment...",
+        clears_after=2,
+    )
+    crawled = _render(page, seconds=5)
+    assert crawled.status_code == 200
+    assert crawled.passed_interstitial == "Cloudflare challenge"
+
+
+class _PageWithBrokenEmbed(_ChallengePage):
+    """An ordinary page whose embedded iframe (another frame) loads a document answering 404,
+    as a broken map or form embed does."""
+
+    async def goto(self, url: str, **kwargs) -> _FakeResponse:
+        first = await super().goto(url, **kwargs)
+        self._emit(_FakeResponse(f"{self.BASE}/embed/map", 404, {}, frame=object()))
+        return first
+
+
+def test_a_child_frame_document_never_sets_the_page_status(fast_polls) -> None:
+    page = _PageWithBrokenEmbed(first_status=200, first_headers={}, first_title="Acme Builders")
+    crawled = _render(page, seconds=5)
+    assert crawled.status_code == 200
+
+
+def test_a_check_on_another_website_fails_that_page_at_once(fast_polls) -> None:
+    # An internal link that redirects to a third party's portal behind Cloudflare. That site is
+    # not being audited: nobody waits for its check, and it walls nothing (bot_check is None).
+    page = _ChallengePage(
+        first_url="https://portal.saas.example/login",
+        first_status=403,
+        first_headers={"cf-mitigated": "challenge"},
+        first_title="Just a moment...",
+    )
+    started = time.monotonic()
+    with pytest.raises(SiteBlockedError) as excinfo:
+        _render(page, seconds=30)
+    assert time.monotonic() - started < 5
+    assert page.looks == 1
+    assert excinfo.value.page_reason == OTHER_SITE_BOT_CHECK_PAGE_REASON
+    assert excinfo.value.bot_check is None
+
+
+class _PassesAnotherWebsitesCheckMidNavigation(_ChallengePage):
+    """Lands on another website's check, whose next document is that site's real page, while
+    title() keeps failing (a navigation that has not settled when the wait ends)."""
+
+    async def goto(self, url: str, **kwargs) -> _FakeResponse:
+        first = await super().goto(url, **kwargs)
+        self._emit(_FakeResponse(self.url, 200, {}, frame=self.main_frame))
+        return first
+
+
+def test_the_wait_ending_on_another_website_walls_nothing(fast_polls) -> None:
+    # A check was seen, but on another website: when the budget ends mid-navigation there, the
+    # page fails as a link to another website's check, never as the audited site's own wall.
+    page = _PassesAnotherWebsitesCheckMidNavigation(
+        first_url="https://portal.saas.example/login",
+        first_status=403,
+        first_headers={"cf-mitigated": "challenge"},
+        first_title="Just a moment...",
+        navigating_looks=99,
+    )
+    with pytest.raises(SiteBlockedError) as excinfo:
+        _render(page, seconds=0)
+    assert excinfo.value.page_reason == OTHER_SITE_BOT_CHECK_PAGE_REASON
+    assert excinfo.value.bot_check is None
+
+
+def test_a_navigation_into_a_check_is_the_check_not_just_navigating() -> None:
+    # title() fails mid-navigation, but the document the browser is moving to is SiteGround's
+    # check (its address and header say so): the check is in the way, so a wait that ends now
+    # reports it instead of capturing whatever the page shows.
+    page = _ChallengePage(navigating_looks=1)
+    documents = crawler._DocumentWatch(page)
+    documents.latest = _FakeResponse(
+        _SG_CHALLENGE_URL, 200, {"sg-captcha": "challenge"}, frame=page.main_frame
+    )
+    found = asyncio.run(crawler._interstitial_now(page, documents, None))
+    assert found == ("SiteGround anti-bot check", INTERSTITIAL_WAITABLE)
+
+
+@pytest.mark.parametrize("breaks", ["crashed", "closed"])
+def test_a_dead_page_fails_at_once_not_after_the_wait(fast_polls, breaks) -> None:
+    # title() fails on a crashed or closed page as well, but that page is not navigating:
+    # waiting out the budget would only delay the failure, and call it the site's check.
+    page = _ChallengePage(breaks=breaks)
+    started = time.monotonic()
+    with pytest.raises(CrawlerError) as excinfo:
+        _render(page, seconds=30)
+    assert time.monotonic() - started < 5
+    assert page.looks == 1
+    assert not isinstance(excinfo.value, SiteBlockedError)
+
+
+def test_a_check_only_its_title_gives_away_is_never_scored(fast_polls) -> None:
+    # The wait ends with the page still navigating and no check seen, so the page is captured;
+    # its title then shows Cloudflare's "Just a moment..." screen, which is never scored.
+    page = _ChallengePage(
+        first_status=200, first_headers={}, first_title="Just a moment...", navigating_looks=1
+    )
+    with pytest.raises(SiteBlockedError) as excinfo:
+        _render(page, seconds=0)
+    assert excinfo.value.page_reason == BOT_CHECK_PAGE_REASON
+    assert excinfo.value.bot_check == "Cloudflare challenge"
+
+
+# --- A bot check or an HTTP error on an internal page (the homepage loaded) ----------------------
+
+
+class _RoutedPage:
+    """Picks its _ChallengePage at goto(), once the address is known, and hands it the
+    listeners registered before (_render_page registers them before goto)."""
+
+    def __init__(self, site: dict[str, dict], opened: list[str]) -> None:
+        self._site = site
+        self._opened = opened
+        self._listeners: list = []
+        self._page: _ChallengePage | None = None
+
+    def on(self, event: str, callback) -> None:
+        self._listeners.append((event, callback))
+
+    async def goto(self, url: str, **kwargs) -> _FakeResponse:
+        self._opened.append(url)
+        path = urlparse(url).path
+        ordinary = {"first_status": 200, "first_headers": {}, "first_title": path}
+        self._page = _ChallengePage(**self._site.get(path, ordinary))
+        for event, callback in self._listeners:
+            self._page.on(event, callback)
+        return await self._page.goto(url, **kwargs)
+
+    def __getattr__(self, name: str):
+        return getattr(self._page, name)
+
+
+class _SiteContext(_FakeRouteContext):
+    """A context whose pages answer like a small website: `site` maps a path to the
+    _ChallengePage options it shows (an ordinary page when the path is not listed)."""
+
+    def __init__(self, site: dict[str, dict], opened: list[str]) -> None:
+        super().__init__()
+        self._site = site
+        self._opened = opened
+
+    async def new_page(self) -> _RoutedPage:
+        return _RoutedPage(self._site, self._opened)
+
+
+def _home_linking(*paths: str) -> dict:
+    links = "".join(f'<a href="{path}">{path}</a>' for path in paths)
+    return {
+        "first_status": 200,
+        "first_headers": {},
+        "first_title": "Acme Builders | Home",
+        "body": f"<nav>{links}</nav>",
+    }
+
+
+def _crawl_site_like(monkeypatch, site: dict[str, dict], **overrides):
+    """Run the real crawl_site and _render_page over `site`; return the result, the addresses
+    the browser opened (in order) and the browser double."""
+    opened: list[str] = []
+    browser = _FakeBrowser(context_cls=functools.partial(_SiteContext, site, opened))
+
+    async def _fake_launch(_playwright, _settings):
+        return browser
+
+    async def _fake_robots(_url, _settings):
+        return SimpleNamespace(can_fetch=lambda *_a, **_k: True)
+
+    class _FakePlaywrightCM:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    monkeypatch.setattr(crawler, "_launch_chromium", _fake_launch)
+    monkeypatch.setattr(crawler, "load_robots_policy", _fake_robots)
+    monkeypatch.setattr(crawler.playwright_api, "async_playwright", lambda: _FakePlaywrightCM())
+    settings = _crawl_settings(
+        crawler_allow_private_hosts=True,
+        crawler_concurrency=1,
+        crawler_screenshots_enabled=False,
+        **overrides,
+    )
+    result = asyncio.run(crawler.crawl_site("https://www.example.com/", settings, "job-1"))
+    return result, opened, browser
+
+
+def test_failed_internal_pages_get_a_short_reason_of_their_own(monkeypatch, fast_polls) -> None:
+    # The report prints each failed page's reason in its "Failed internal pages" table, inside a
+    # report that WAS built: the reason speaks of that page, never "We couldn't audit this
+    # website" or "Please check the address" (the visitor typed neither address).
+    site = {
+        "/": _home_linking("/old-page", "/client-login", "/about"),
+        "/old-page": {"first_status": 404, "first_headers": {}, "first_title": "Not found"},
+        "/client-login": {"first_status": 403, "first_headers": {}, "first_title": "Forbidden"},
+    }
+    result, _opened, _browser = _crawl_site_like(monkeypatch, site)
+
+    assert {page["url"]: page["reason"] for page in result.failed_pages} == {
+        "https://www.example.com/old-page": "Page not found (HTTP 404)",
+        "https://www.example.com/client-login": "Refused by the site (HTTP 403)",
+    }
+    assert [page.final_url for page in result.pages] == [
+        "https://www.example.com/",
+        "https://www.example.com/about",
+    ]
+    assert result.skipped_pages == []
+
+
+def test_the_sites_own_check_on_a_page_stops_the_crawl_there(monkeypatch, fast_polls) -> None:
+    # Every page not opened yet would meet the same check, one more unsolved check each on the
+    # server's record: after the first blocked page the rest are skipped, never opened.
+    site = {"/": _home_linking("/a", "/b", "/c"), "/a": {}, "/b": {}, "/c": {}}
+    result, opened, browser = _crawl_site_like(monkeypatch, site, crawler_challenge_wait_seconds=0)
+
+    assert len(opened) == 2  # the homepage and ONE of the checked pages
+    assert len(browser.contexts) == 2
+    assert [page["reason"] for page in result.failed_pages] == [BOT_CHECK_PAGE_REASON]
+    assert [page["reason"] for page in result.skipped_pages] == ["stopped_after_bot_check"] * 2
+    assert {page["url"] for page in result.failed_pages + result.skipped_pages} == {
+        "https://www.example.com/a",
+        "https://www.example.com/b",
+        "https://www.example.com/c",
+    }
+    assert result.status == "partial"
+
+
+def test_a_link_to_another_websites_check_does_not_stop_the_crawl(monkeypatch, fast_polls) -> None:
+    site = {
+        "/": _home_linking("/client-portal", "/about", "/contact"),
+        "/client-portal": {
+            "first_url": "https://portal.saas.example/login",
+            "first_status": 403,
+            "first_headers": {"cf-mitigated": "challenge"},
+            "first_title": "Just a moment...",
+        },
+    }
+    started = time.monotonic()
+    result, opened, _browser = _crawl_site_like(
+        monkeypatch, site, crawler_challenge_wait_seconds=30
+    )
+
+    assert time.monotonic() - started < 5  # nobody waits for another website's check
+    assert len(opened) == 4
+    assert [(page["url"], page["reason"]) for page in result.failed_pages] == [
+        ("https://www.example.com/client-portal", OTHER_SITE_BOT_CHECK_PAGE_REASON)
+    ]
+    assert result.skipped_pages == []
+    assert len(result.pages) == 3
 
 
 def test_robots_txt_answered_by_a_bot_check_is_unavailable_not_loaded(monkeypatch) -> None:
