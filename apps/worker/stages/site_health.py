@@ -43,6 +43,7 @@ from apps.worker.stages.crawler import (
     _ip_is_blocked,
     _resolve_host_ips,
     _site_host,
+    interstitial_reason,
     is_same_site,
     normalize_url,
 )
@@ -65,8 +66,16 @@ _RATE_LIMIT_STATUS = 429
 _MAX_RATE_LIMIT_RETRIES = 2
 _RETRY_AFTER_CAP_SECONDS = 30
 # Response fingerprints that indicate a WAF/bot-management layer answered instead of
-# the origin — used only to explain failures honestly, never to bypass anything.
-_WAF_HEADER_MARKERS = ("cf-ray", "cf-mitigated")
+# the origin — used only to explain failures honestly, never to bypass anything. They feed
+# the `waf_signals` counter only: cf-ray and the server tokens are on every proxied response,
+# so the BLOCK decision uses _bot_check_label's exact markers instead.
+_WAF_HEADER_MARKERS = (
+    "cf-ray",
+    "cf-mitigated",
+    "sg-captcha",
+    "x-amzn-waf-action",
+    "x-vercel-mitigated",
+)
 _WAF_SERVER_TOKENS = ("cloudflare", "akamai", "sucuri", "imperva", "incapsula")
 # One diagnostic recheck with a regular browser profile distinguishes "the site blocks
 # automated checkers" from "the site is down" before the report says anything.
@@ -128,6 +137,14 @@ def _looks_waf(response: httpx.Response) -> bool:
         return True
     server = (headers.get("server") or "").lower()
     return any(token in server for token in _WAF_SERVER_TOKENS)
+
+
+def _bot_check_label(response: httpx.Response) -> str | None:
+    """The bot check (SiteGround, Cloudflare, AWS WAF, Vercel) that answered instead of the
+    page, or None. Exact vendor markers only (crawler.interstitial_reason): unlike _looks_waf,
+    this decides that the host walled the checker, so cf-ray never counts."""
+    found = interstitial_reason(str(response.url), response.status_code, response.headers, None)
+    return found[0] if found else None
 
 
 def _retry_after_seconds(response: httpx.Response, attempt: int) -> float:
@@ -295,6 +312,9 @@ async def _collect(
             notes=notes,
             host_allowed_cache=host_allowed_cache,
             global_deadline=deadline,
+            # The sitemap already met the site's bot check: every link request would meet it
+            # too, so the sweep sends none.
+            walled=sitemap_status == _SITEMAP_BOT_CHECK,
         )
 
     summary["sitemap_url_count"] = len(sitemap_urls)
@@ -365,6 +385,7 @@ async def _collect(
             "skipped_breaker": checks.get("skipped_breaker", 0),
             "skipped_budget": skipped_budget,
             "browser_recheck_ok": checks.get("browser_recheck_ok"),
+            "bot_check_internal_urls": checks.get("bot_check_internal", 0),
         },
         "notes": notes,
         "files": [],
@@ -521,6 +542,8 @@ def _link_inventory(
 
 
 _SITEMAP_MAX_DEPTH = 2
+# sitemap_status when the site's bot check answered instead of the sitemap.
+_SITEMAP_BOT_CHECK = "bot_check"
 
 
 async def _sitemap_urls(
@@ -575,6 +598,9 @@ async def _fetch_sitemap(
         return set(), "skipped"
     except httpx.HTTPError:
         return set(), "unavailable"
+    if _bot_check_label(response) is not None:
+        # Not an unparseable sitemap: the site's bot check answered in its place.
+        return set(), _SITEMAP_BOT_CHECK
     if response.status_code == 404:
         return set(), "missing"
     if response.status_code >= 400:
@@ -625,7 +651,11 @@ async def _sweep(
     notes: list[str],
     host_allowed_cache: dict[str, bool],
     global_deadline: float | None = None,
+    walled: bool = False,
 ) -> JsonDict:
+    # `walled`: the site's bot check already answered this sweep (the sitemap fetch), so the
+    # breaker starts tripped and no link request is sent.
+    #
     # Politeness binds PER TARGET HOST: the audited site takes many requests and needs the
     # narrow lanes + spacing, but outbound links live on DISTINCT third-party hosts and get
     # one or two requests each — serializing them through the same lanes would only burn the
@@ -656,12 +686,19 @@ async def _sweep(
         "internal_conclusive": 0,
         "skipped_breaker": 0,
         "waf_signals": 0,
+        # Internal URLs the site's bot check answered instead of the page (not checked).
+        "bot_check_internal": 0,
     }
     error_classes: dict[str, int] = defaultdict(int)
     # Circuit breaker: consecutive INTERNAL transport failures mean the host (or its
     # firewall) has stopped answering this checker — keep hammering and every remaining
-    # URL becomes a false "dead link".
-    breaker = {"consecutive": 0, "tripped": False, "sample_url": None}
+    # URL becomes a false "dead link". A bot check trips it at once (`bot_check`).
+    breaker: dict[str, Any] = {
+        "consecutive": 0,
+        "tripped": walled,
+        "sample_url": None,
+        "bot_check": walled,
+    }
     lock = asyncio.Lock()
 
     async def check(url: str, *, internal: bool) -> None:
@@ -704,7 +741,15 @@ async def _sweep(
                     counters["blocked"] += 1
                 return
             try:
-                status_code, x_robots, error, redirect_hops, err_class, waf = await _check_url(
+                (
+                    status_code,
+                    x_robots,
+                    error,
+                    redirect_hops,
+                    err_class,
+                    waf,
+                    bot_check,
+                ) = await _check_url(
                     client,
                     url,
                     settings,
@@ -744,6 +789,17 @@ async def _sweep(
             if status_code is None:
                 return
             if internal:
+                if bot_check:
+                    # The site's bot check answered instead of the page (SiteGround's 202 also
+                    # says x-robots-tag: noindex, which is about the check, not the page). Like
+                    # a final 429 it is not a checked or answered URL and feeds no finding. Unlike
+                    # a 429, asking again cannot help: trip the breaker at once, because every
+                    # further request is one more unsolved check on this server's record.
+                    counters["internal_checked"] -= 1
+                    counters["bot_check_internal"] += 1
+                    breaker["tripped"] = True
+                    breaker["bot_check"] = True
+                    return
                 # The client's own site: every error is a reliable, actionable
                 # signal because we control the request.
                 if status_code == _RATE_LIMIT_STATUS:
@@ -785,8 +841,11 @@ async def _sweep(
             # bot. 404/410 means the destination page is genuinely gone and a 5xx
             # is a real server error; auth/forbidden/rate-limit/legal codes are
             # bot-blocking noise (the link works for real visitors), so they are
-            # tallied for QA but never reported as broken.
-            if status_code in _BROKEN_EXTERNAL_CLIENT_STATUSES:
+            # tallied for QA but never reported as broken. A bot check on another host is
+            # the same noise, whatever its status (Cloudflare's older checks answered 503).
+            if bot_check:
+                counters["inconclusive_external"] += 1
+            elif status_code in _BROKEN_EXTERNAL_CLIENT_STATUSES:
                 _count(summary, examples, "client_error_external_urls", url)
             elif status_code >= 500:
                 _count(summary, examples, "server_error_external_urls", url)
@@ -821,7 +880,18 @@ async def _sweep(
 
     counters["error_classes"] = dict(sorted(error_classes.items()))
     counters["bot_blocked"] = bool(breaker["tripped"])
-    if breaker["tripped"]:
+    if breaker["bot_check"]:
+        # No browser-profile recheck here: it would be one more unsolved check, and the audit
+        # never disguises its checker to get past a site's bot protection.
+        skipped = counters["skipped_breaker"]
+        left = ""
+        if skipped:
+            left = f"; {skipped} URL{'s were' if skipped != 1 else ' was'} left unchecked"
+        notes.append(
+            "Link checking stopped when the site's security check answered instead of its "
+            f"pages{left}. Link results are incomplete and are not scored."
+        )
+    elif breaker["tripped"]:
         recheck_ok = await _browser_ua_recheck(breaker["sample_url"], settings)
         counters["browser_recheck_ok"] = recheck_ok
         detail = (
@@ -890,9 +960,10 @@ async def _request_polite(
     return response, hops
 
 
-def _check_outcome(
-    response: httpx.Response, hops: int
-) -> tuple[int | None, str | None, str | None, int, str | None, bool]:
+CheckResult = tuple[int | None, str | None, str | None, int, str | None, bool, bool]
+
+
+def _check_outcome(response: httpx.Response, hops: int) -> CheckResult:
     return (
         response.status_code,
         response.headers.get("x-robots-tag"),
@@ -900,13 +971,20 @@ def _check_outcome(
         hops,
         None,
         _looks_waf(response),
+        _bot_check_label(response) is not None,
     )
 
 
-def _check_failure(
-    exc: httpx.HTTPError,
-) -> tuple[int | None, str | None, str | None, int, str | None, bool]:
-    return None, None, _trim(str(exc) or exc.__class__.__name__), 0, _error_class(exc), False
+def _check_failure(exc: httpx.HTTPError) -> CheckResult:
+    return (
+        None,
+        None,
+        _trim(str(exc) or exc.__class__.__name__),
+        0,
+        _error_class(exc),
+        False,
+        False,
+    )
 
 
 async def _check_url(
@@ -916,19 +994,22 @@ async def _check_url(
     host_allowed_cache: dict[str, bool],
     global_slot: asyncio.Semaphore | None = None,
     deadline: float | None = None,
-) -> tuple[int | None, str | None, str | None, int, str | None, bool]:
+) -> CheckResult:
     """Return (status_code, x_robots_tag_header, error, redirect_hops, error_class,
-    waf_suspected).
+    waf_suspected, bot_check).
 
     GET is retried only when HEAD specifically is the problem (servers that
     reject or mishandle HEAD, or rate-limit it with a persistent 429). Timeouts and
     connection failures would fail a GET identically, so retrying them would just
-    double the worst-case latency.
+    double the worst-case latency. A bot check is never retried either: a GET would only
+    meet it again.
     """
     try:
         response, hops = await _request_polite(
             client, "HEAD", url, settings, host_allowed_cache, global_slot, deadline
         )
+        if _bot_check_label(response) is not None:
+            return _check_outcome(response, hops)
         if response.status_code in _RETRY_GET_STATUSES:
             response, hops = await _request_polite(
                 client, "GET", url, settings, host_allowed_cache, global_slot, deadline

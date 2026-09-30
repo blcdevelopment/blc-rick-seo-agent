@@ -471,6 +471,13 @@ docker compose -p blc-rick-seo-agent -f docker-compose.prod.yml start api worker
 8. **The two Google keys are the ai app's.** If they are rotated there, update this `.env` too,
    then recreate the api and the worker.
 9. **The route lives in another repository:** the `seo` block in `blc-social-audit/Caddyfile`.
+10. **Sites behind a bot check (SiteGround, Cloudflare).** The worker waits up to
+    `CRAWLER_CHALLENGE_WAIT_SECONDS` (default 15) for the site's own check to let it through. If
+    the check does not clear, or the site refuses the server (for example HTTP 403), the audit fails
+    with a plain message instead of scoring the check page. At this worker's 1 CPU, SiteGround's
+    check often gives up first, so SiteGround sites that have flagged this server usually end with
+    that message. The fix is on the host's side: SiteGround support must allow-list
+    173.255.206.170 (Site Tools has no setting for it).
 
 ### 2.9 Deeper docs
 

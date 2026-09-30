@@ -6,6 +6,7 @@ import ipaddress
 import os
 import socket
 from collections import defaultdict
+from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -25,6 +26,113 @@ from apps.worker.stages.extractor_uxui import _EMBED_PROVIDER_SIGNATURES
 
 class CrawlerError(RuntimeError):
     """Raised when the audit cannot collect the homepage."""
+
+
+class SiteBlockedError(CrawlerError):
+    """The site's bot check, its firewall or an HTTP error kept the audit browser off the page.
+
+    A failed audit shows this text word for word to the visitor who ran it (tasks.py stores
+    ``str(exc)`` as the job's ``error_message``), so it stays short, plain and non-technical."""
+
+
+# Shown when a bot check did not let the browser through (it never cleared, or only a person
+# could clear it). The report is never built from the check's own page.
+BOT_CHECK_BLOCKED_MESSAGE = (
+    "We couldn't audit this website. Its security check blocked our scanner, so we stopped "
+    "instead of scoring the security screen. If this is your site, ask your web host to allow "
+    "our scanner, then try again."
+)
+
+
+def http_error_message(status_code: int) -> str:
+    """Plain visitor text for a page that answered with an HTTP error status."""
+    if status_code in {401, 403}:
+        return (
+            f"We couldn't audit this website. It refused our scanner (HTTP {status_code}), "
+            "usually a firewall or security setting. If this is your site, ask your web host to "
+            "allow our scanner, then try again."
+        )
+    if status_code == 429:
+        return "The website asked us to slow down (HTTP 429). Please try again in a few minutes."
+    if status_code in {404, 410}:
+        return (
+            f"We couldn't find that page (HTTP {status_code}). Please check the address and try "
+            "again."
+        )
+    return f"The website returned an error (HTTP {status_code}). Please try again later."
+
+
+# Bot checks ("interstitials") that some hosts answer with instead of the page. Only exact,
+# vendor-documented markers count, so a normal page can never match: cf-ray and
+# "server: cloudflare" are on every proxied response and are deliberately NOT markers.
+INTERSTITIAL_WAITABLE = "waitable"  # the site's own script can clear it and load the page
+INTERSTITIAL_TERMINAL = "terminal"  # only a person can clear it (a CAPTCHA or a block page)
+
+_SITEGROUND_CHECK = "SiteGround anti-bot check"
+_CLOUDFLARE_CHECK = "Cloudflare challenge"
+# (path prefix, vendor label, kind). SiteGround's check falls back to its human CAPTCHA page.
+_INTERSTITIAL_PATHS: tuple[tuple[str, str, str], ...] = (
+    ("/.well-known/sgcaptcha/", _SITEGROUND_CHECK, INTERSTITIAL_WAITABLE),
+    ("/.well-known/captcha/", "SiteGround CAPTCHA", INTERSTITIAL_TERMINAL),
+    ("/cdn-cgi/challenge-platform/", _CLOUDFLARE_CHECK, INTERSTITIAL_WAITABLE),
+)
+# (header name, exact lower-cased value, vendor label, kind). SiteGround's `sg-captcha` header
+# is matched on "contains challenge" in interstitial_reason itself.
+_INTERSTITIAL_HEADERS: tuple[tuple[str, str, str, str], ...] = (
+    ("cf-mitigated", "challenge", _CLOUDFLARE_CHECK, INTERSTITIAL_WAITABLE),
+    ("x-amzn-waf-action", "challenge", "AWS WAF challenge", INTERSTITIAL_WAITABLE),
+    ("x-amzn-waf-action", "captcha", "AWS WAF CAPTCHA", INTERSTITIAL_TERMINAL),
+    ("x-vercel-mitigated", "challenge", "Vercel challenge", INTERSTITIAL_WAITABLE),
+)
+# Exact, lower-cased document titles.
+_INTERSTITIAL_TITLES: dict[str, tuple[str, str]] = {
+    "robot challenge screen": (_SITEGROUND_CHECK, INTERSTITIAL_WAITABLE),
+    "just a moment...": (_CLOUDFLARE_CHECK, INTERSTITIAL_WAITABLE),
+    "attention required! | cloudflare": ("Cloudflare block page", INTERSTITIAL_TERMINAL),
+}
+
+
+def interstitial_reason(
+    url: str | None,
+    status: int | None,
+    headers: Mapping[str, str] | None,
+    title: str | None,
+) -> tuple[str, str] | None:
+    """Name the bot check a response shows in place of the page, or None for a real page.
+
+    Returns ``(vendor label, kind)``, kind being INTERSTITIAL_WAITABLE (the site's own script
+    may still let the browser through) or INTERSTITIAL_TERMINAL (only a person can). Terminal
+    markers win, because SiteGround's human-CAPTCHA page still carries its challenge header and
+    title. ``status`` never decides on its own: a marker-less 403 is left to the HTTP-status
+    path, and a 200 or 202 that carries a marker is still a check."""
+    lowered = {
+        str(name).lower(): str(value).strip().lower() for name, value in (headers or {}).items()
+    }
+    path = urlparse(url or "").path
+    found: list[tuple[str, str]] = [
+        (label, kind) for prefix, label, kind in _INTERSTITIAL_PATHS if path.startswith(prefix)
+    ]
+    if "challenge" in lowered.get("sg-captcha", ""):
+        found.append((_SITEGROUND_CHECK, INTERSTITIAL_WAITABLE))
+    found.extend(
+        (label, kind)
+        for name, value, label, kind in _INTERSTITIAL_HEADERS
+        if lowered.get(name) == value
+    )
+    by_title = _INTERSTITIAL_TITLES.get((title or "").strip().lower())
+    if by_title is not None:
+        found.append(by_title)
+    for reason in found:
+        if reason[1] == INTERSTITIAL_TERMINAL:
+            return reason
+    return found[0] if found else None
+
+
+def is_interstitial_url(url: str | None) -> bool:
+    """True for a bot check's own address (SiteGround's /.well-known/sgcaptcha/ and
+    /.well-known/captcha/, Cloudflare's /cdn-cgi/challenge-platform/): never a page to score."""
+    path = urlparse(url or "").path
+    return any(path.startswith(prefix) for prefix, _label, _kind in _INTERSTITIAL_PATHS)
 
 
 def _utc_now() -> str:
@@ -198,15 +306,24 @@ async def _new_crawl_context(
     browser: playwright_api.Browser,
     settings: Settings,
     resolve_cache: dict[str, bool],
+    storage_state: Any = None,
 ) -> playwright_api.BrowserContext:
     """Create a browser context with the standard crawl options and, unless private
-    hosts are allowed, the request-level SSRF guard attached."""
-    context = await browser.new_context(
-        ignore_https_errors=True,
-        service_workers="block",
-        user_agent=settings.crawler_user_agent,
-        viewport={"width": 1280, "height": 720},
-    )
+    hosts are allowed, the request-level SSRF guard attached.
+
+    ``storage_state`` carries the cookies a site's bot check set on the homepage (crawl_site
+    passes it only after the browser passed such a check), so child pages are not challenged
+    again. It is handed to Playwright only when given: every other site gets exactly the
+    options below."""
+    options: dict[str, Any] = {
+        "ignore_https_errors": True,
+        "service_workers": "block",
+        "user_agent": settings.crawler_user_agent,
+        "viewport": {"width": 1280, "height": 720},
+    }
+    if storage_state is not None:
+        options["storage_state"] = storage_state
+    context = await browser.new_context(**options)
     context.set_default_timeout(settings.crawler_page_timeout_seconds * 1000)
     context.set_default_navigation_timeout(settings.crawler_page_timeout_seconds * 1000)
     if settings.crawler_intercept_requests and not settings.crawler_allow_private_hosts:
@@ -256,6 +373,10 @@ class CrawledPage:
     # counted AFTER page.content() so the captured HTML/screenshot stay unchanged.
     frame_form_count: int = 0
     frame_form_field_count: int = 0
+    # The bot check (e.g. "SiteGround anti-bot check") the browser waited out before this page
+    # loaded, or None. Operator traceability only: stored with the crawl JSON, never shown in a
+    # report or to visitors.
+    passed_interstitial: str | None = None
 
     def to_public_dict(self) -> dict[str, Any]:
         return {
@@ -271,6 +392,7 @@ class CrawledPage:
             "link_score": self.link_score,
             "screenshot_path": self.screenshot_path,
             "screenshot_error": self.screenshot_error,
+            "passed_interstitial": self.passed_interstitial,
         }
 
 
@@ -431,6 +553,15 @@ async def load_robots_policy(start_url: str, settings: Settings) -> RobotsPolicy
     except Exception as exc:
         return RobotsPolicy(status="unavailable", robots_url=robots_url, error=str(exc))
 
+    bot_check = interstitial_reason(str(response.url), response.status_code, response.headers, None)
+    if bot_check is not None:
+        # A bot check answered instead of robots.txt. Its HTML parses to zero rules, which must
+        # not be recorded as a loaded robots.txt that allows everything.
+        return RobotsPolicy(
+            status="unavailable",
+            robots_url=robots_url,
+            error=f"robots.txt answered with a bot check ({bot_check[0]})",
+        )
     if response.status_code == 404:
         return RobotsPolicy(status="missing", robots_url=robots_url)
     if response.status_code >= 400:
@@ -529,6 +660,106 @@ async def _capture_screenshot(
     return str(path), None
 
 
+# How often the page is looked at while a site's own bot check runs, and how long the real page
+# may take to settle once the check lets the browser through.
+_INTERSTITIAL_POLL_SECONDS = 0.25
+_SETTLE_TIMEOUT_MS = 5000
+# What _interstitial_now reports while the check's own navigation replaces the document.
+_STILL_NAVIGATING = ("", "navigating")
+
+
+class _DocumentWatch:
+    """The main frame's document responses during one page load.
+
+    goto() resolves with the FIRST document, which on a bot-checked site is the check's own
+    page (SiteGround answers 202 with a meta refresh), and a fast CPU can pass the check before
+    the first look. So this keeps the latest non-redirect document of the main frame, plus the
+    label of the first bot check seen on any document of the load."""
+
+    def __init__(self, page: Any) -> None:
+        self._page = page
+        self.latest: Any = None
+        self.seen: str | None = None
+
+    def on_response(self, response: Any) -> None:
+        # An event callback must never raise into Playwright's event dispatch.
+        with suppress(Exception):
+            if not response.request.is_navigation_request():
+                return
+            if response.frame != self._page.main_frame or 300 <= response.status < 400:
+                return
+            self.latest = response
+            if self.seen is None:
+                found = interstitial_reason(response.url, response.status, response.headers, None)
+                if found is not None:
+                    self.seen = found[0]
+
+
+async def _interstitial_now(
+    page: Any, documents: _DocumentWatch, response: Any
+) -> tuple[str, str] | None:
+    """The bot check the page shows right now, _STILL_NAVIGATING while it is mid-navigation,
+    or None for a real page."""
+    try:
+        title = await page.title()
+    except playwright_api.Error:
+        # title() fails while a navigation (the check's own redirect) replaces the document.
+        return _STILL_NAVIGATING
+    # Read the latest document only now: it may have changed while title() was awaited.
+    current = documents.latest or response
+    status = current.status if current is not None else None
+    headers = current.headers if current is not None else None
+    return interstitial_reason(page.url, status, headers, title)
+
+
+async def _wait_out_interstitial(
+    page: Any,
+    response: Any,
+    documents: _DocumentWatch,
+    settings: Settings,
+) -> tuple[Any, str | None]:
+    """Give a site's own bot check up to ``crawler_challenge_wait_seconds`` to let the browser
+    through, the way a visitor's browser simply waits.
+
+    Returns the final document's response and the label of the check that was passed (None
+    when there was none). Raises SiteBlockedError at once for a check only a person can clear
+    (a CAPTCHA or block page), and when a check is still showing after the budget. Nothing is
+    disguised or solved, and a blocked page is never retried: each attempt is one more
+    unsolved check on this server's record with the host."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + max(0, settings.crawler_challenge_wait_seconds)
+    current = await _interstitial_now(page, documents, response)
+    if current is None:
+        return documents.latest or response, documents.seen
+    label = documents.seen
+    # Whether the check is, as far as we know, still in the way. A page caught mid-navigation
+    # counts as checking only when a check showed up during this load.
+    checking = label is not None
+    while True:
+        if current is not _STILL_NAVIGATING:
+            label = label or current[0]
+            checking = True
+            if current[1] == INTERSTITIAL_TERMINAL:
+                raise SiteBlockedError(BOT_CHECK_BLOCKED_MESSAGE)
+        if loop.time() >= deadline:
+            if checking:
+                raise SiteBlockedError(BOT_CHECK_BLOCKED_MESSAGE)
+            # No check in the way, just a page still navigating: capture it as before.
+            return documents.latest or response, label
+        await asyncio.sleep(_INTERSTITIAL_POLL_SECONDS)
+        current = await _interstitial_now(page, documents, response)
+        if current is None:
+            # The check let the browser through: let the real page settle, then look again.
+            checking = False
+            with suppress(playwright_api.Error):
+                await page.wait_for_load_state("domcontentloaded", timeout=_SETTLE_TIMEOUT_MS)
+            with suppress(playwright_api.Error):
+                await page.wait_for_load_state("networkidle", timeout=_SETTLE_TIMEOUT_MS)
+            current = await _interstitial_now(page, documents, response)
+            if current is None:
+                return documents.latest or response, label
+
+
 async def _render_page(
     context: playwright_api.BrowserContext,
     url: str,
@@ -539,6 +770,9 @@ async def _render_page(
 ) -> CrawledPage:
     page = await context.new_page()
     try:
+        documents = _DocumentWatch(page)
+        # Registered before goto, so even the first document (a bot check's own page) is seen.
+        page.on("response", documents.on_response)
         response = await page.goto(
             url,
             wait_until="domcontentloaded",
@@ -547,9 +781,16 @@ async def _render_page(
         with suppress(playwright_api.TimeoutError):
             await page.wait_for_load_state("networkidle", timeout=5000)
 
+        # A site's bot check (SiteGround, Cloudflare, ...) may answer first. Wait for the site's
+        # own check BEFORE the status check, so a page reached after it records its own status
+        # (200), not the check's (202), and the check's page is never captured or scored.
+        response, passed_interstitial = await _wait_out_interstitial(
+            page, response, documents, settings
+        )
+
         status_code = response.status if response else None
         if is_failed_http_status(status_code):
-            raise CrawlerError(f"HTTP {status_code} while rendering {url}")
+            raise SiteBlockedError(http_error_message(status_code))
 
         html = await page.content()
         title = await page.title()
@@ -593,6 +834,7 @@ async def _render_page(
             axe_results=axe_results,
             frame_form_count=frame_form_count,
             frame_form_field_count=frame_form_field_count,
+            passed_interstitial=passed_interstitial,
         )
     except playwright_api.TimeoutError as exc:
         raise CrawlerError(f"Timed out rendering {url}") from exc
@@ -600,6 +842,10 @@ async def _render_page(
         # Celery's soft limit subclasses Exception: without this re-raise the broad handler
         # below would wrap it into CrawlerError, the honest timed-out failure path in tasks.py
         # would never run, and the worker would run on to the hard-limit SIGKILL.
+        raise
+    except CrawlerError:
+        # Already a final, plain message (a blocked site, an HTTP error). Wrapping it again as
+        # "Could not render <url>: ..." is what used to put raw text in front of visitors.
         raise
     except Exception as exc:
         raise CrawlerError(f"Could not render {url}: {exc}") from exc
@@ -702,6 +948,9 @@ async def crawl_site(url: str, settings: Settings, audit_id: str | None = None) 
     # Shared across every context so the request-level SSRF guard memoizes DNS
     # resolution per host for the whole crawl.
     resolve_cache: dict[str, bool] = {}
+    # Cookies from a bot check the homepage passed (SiteGround's _I_, Cloudflare's
+    # cf_clearance). Without them every child page's fresh context meets the check again.
+    storage_state: Any = None
 
     async with playwright_api.async_playwright() as playwright:
         browser = await _launch_chromium(playwright, settings)
@@ -709,6 +958,10 @@ async def crawl_site(url: str, settings: Settings, audit_id: str | None = None) 
             context = await _new_crawl_context(browser, settings, resolve_cache)
             try:
                 homepage = await _render_page(context, start_url, settings, audit_id)
+                if homepage.passed_interstitial:
+                    # Best effort: without the cookies each child page just meets the check.
+                    with suppress(playwright_api.Error):
+                        storage_state = await context.storage_state()
             finally:
                 await context.close()
 
@@ -741,7 +994,9 @@ async def crawl_site(url: str, settings: Settings, audit_id: str | None = None) 
 
             async def crawl_candidate(candidate: LinkCandidate) -> CrawledPage | None:
                 async with semaphore:
-                    child_context = await _new_crawl_context(browser, settings, resolve_cache)
+                    child_context = await _new_crawl_context(
+                        browser, settings, resolve_cache, storage_state=storage_state
+                    )
                     try:
                         return await _render_page(
                             child_context,

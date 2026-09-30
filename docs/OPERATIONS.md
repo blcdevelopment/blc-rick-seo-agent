@@ -202,6 +202,7 @@ suspend the account — a business-risk decision the operator owns. Keep volume 
 | AI Visibility section missing (teaser) | No valid Semrush session, or `AI_VISIBILITY_ENABLED=false` | §5 |
 | Combined audit has no social section | `APIFY_API_TOKEN` / `YOUTUBE_API_KEY` missing, or the site links no profiles | Add the keys, recreate api + worker |
 | Audits sit at `queued` | Worker down, or pointed at another broker | Check `docker compose ps`, worker logs |
+| Audit failed: "Its security check blocked our scanner" or "It refused our scanner (HTTP 403)" | The site's host (often SiteGround) has flagged the server's address, 173.255.206.170 | Only the host can fix it: SiteGround support must allow-list the address (Site Tools has no setting). `CRAWLER_CHALLENGE_WAIT_SECONDS` only sets how long the worker waits |
 | Build fails / OOM | `next build` on a small box | Confirm swap is active (`swapon --show`); build one image at a time |
 
 ## 8. Security posture

@@ -270,6 +270,11 @@ class Settings(BaseSettings):
     # (local dev / QA harness crawls against localhost fixtures).
     crawler_intercept_requests: bool = True
     crawler_chromium_executable_path: Path | None = None
+    # Some hosts answer with a bot check (SiteGround, Cloudflare, AWS WAF, Vercel) before the page.
+    # The crawler waits up to this many seconds for the site's own check to let the browser
+    # through (it never solves or disguises anything), then fails the audit with a plain message
+    # instead of scoring the check page. SiteGround's check gives up after 10 s. 0 = don't wait.
+    crawler_challenge_wait_seconds: int = Field(default=15, ge=0, le=60)
 
     # Optional advisory accessibility pass (axe-core). Default OFF; mirrors
     # screaming_frog_enabled. When enabled, axe runs DURING the crawl (inside the live
