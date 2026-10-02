@@ -41,7 +41,8 @@ to the Website Audit form, or by auto-promotion when the crawled site links its 
 profiles (credential-gated discovery; promoted **only when the social collection succeeds**) —
 runs the **untouched** website pipeline first, then
 appends a social section and an **Overall Lead-Gen Readiness** score to produce **one report**
-(PDF *and* DOCX). The combined flow is the headline feature; see §6.1. The website
+(PDF *and* DOCX). The combined flow is the parent's headline feature (switched off in this
+edition, §1.1); see §6.1. The website
 pipeline's scoring and report sections are byte-for-byte unchanged by it.
 
 ### 1.1 Rick edition switches
@@ -326,7 +327,7 @@ drops out). Half-up rounding, like the rest of the engine. The result is stored 
 | `GET /health` | Liveness | public |
 | `GET /metrics` | Operational metrics (audit counts by status, 24h throughput, in-flight/oldest, storage usage) | operator |
 | `GET /` | 307 redirect → `/docs` (404 in production, where the docs are off) | public |
-| `POST /audits` | Create + enqueue an audit job (201). `audit_type` ∈ `website`/`social`/`combined`; a combined audit requires **both** `url` and ≥1 social handle. In public mode `brand_overrides` is ignored and a social-only audit is refused (422) | visitor |
+| `POST /audits` | Create + enqueue an audit job (201). `audit_type` ∈ `website`/`social`/`combined`; a combined audit requires **both** `url` and ≥1 social handle. In public mode `brand_overrides` is ignored and a social-only audit is refused (422). With `SOCIAL_AUDITS_ENABLED=false` (this edition) a `combined` or `social` request, or any request with a non-empty `social_handles`, is refused with 422 "Social media audits are not available here." (checked before the public-mode rule; a `combined`/`social` request is not first asked for a URL or a handle) | visitor |
 | `GET /audits` | List recent audits (`limit` 1–100, default 25; `offset`). Rows expose `audit_type` + a combined-only `overall_score` | operator |
 | `GET /audits/{job_id}` | Audit detail + composed report payload, shaped by the report profile (a combined audit uses the website payload, which carries the appended sections); exposes `audit_type` + `overall_score` | visitor |
 | `GET /audits/{job_id}/status` | Progress (stage, percentage, report availability) | visitor |
@@ -390,6 +391,12 @@ a **"Full"** badge and an Overall-score cell for combined rows; `lib/api.ts` gai
 `ReportPayload.social_audit` / `overall_readiness`. **Note:** a social-*only* audit (no website
 URL) can no longer be created from the UI, but the backend `audit_type="social"` path still exists
 and past social audits still render in history/detail.
+
+**No-social build** (`NEXT_PUBLIC_SOCIAL_AUDITS_ENABLED=false`, baked at build time; this
+edition, §1.1): `index.tsx` renders no social section and no social wording, and always submits a
+plain `website` audit with no `social_handles`. The detail and history pages are unchanged: they
+show a social section or an Overall score only for an audit that has one (audits completed before
+the switch).
 
 **Public build** (`NEXT_PUBLIC_PUBLIC_AUDITS_ENABLED=true`, baked at build time): `_app.tsx`
 renders without `ClerkProvider`, `middleware.ts` passes every request through, and

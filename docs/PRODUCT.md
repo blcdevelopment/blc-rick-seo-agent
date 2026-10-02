@@ -31,8 +31,8 @@ the full report.
 | Type | Input | Produces | Status |
 |---|---|---|---|
 | `website` | URL | SEO, UX/UI and Lead-Gen Readiness scores + PDF/DOCX | The default path |
-| `combined` | URL **and** ≥1 social link | The website report with a **Social Media Audit** section and an **Overall Lead-Gen Readiness** score appended | The headline flow |
-| `social` | ≥1 social link (no URL) | A standalone Social Score + its own PDF (no DOCX) | Backend-only — the UI page was removed 2026-06-26; reachable via `POST /audits` only with public mode off (public mode answers 422) |
+| `combined` | URL **and** ≥1 social link | The website report with a **Social Media Audit** section and an **Overall Lead-Gen Readiness** score appended | Off in this edition (422); the parent's headline flow |
+| `social` | ≥1 social link (no URL) | A standalone Social Score + its own PDF (no DOCX) | Off in this edition (422). Backend-only — the UI page was removed 2026-06-26; reachable via `POST /audits` only with public mode off (public mode answers 422) |
 
 A job is exactly one type, but a `website` job **can be promoted to `combined` mid-run**: if the
 crawled site links to its own social profiles and a provider credential is configured, the social
@@ -44,8 +44,9 @@ step runs, and promotion happens only when the collection actually returns usabl
 parent's, kept in the code and switched off; audits completed before the switch keep theirs.
 
 **Scoring shape:** Lead-Gen Readiness = 0.45 × SEO + 0.55 × UX/UI (`rubrics/composite.yaml`).
-Overall Readiness = 0.70 × Lead-Gen + 0.30 × Social (`rubrics/overall.yaml`), and rescales to the
-website score alone when social produced nothing. Bands: ≥75 strong, ≥50 fair, <50 weak.
+Overall Readiness (combined audits only, so none in this edition) = 0.70 × Lead-Gen + 0.30 ×
+Social (`rubrics/overall.yaml`), and rescales to the website score alone when social produced
+nothing. Bands: ≥75 strong, ≥50 fair, <50 weak.
 
 ## 3. What each area evaluates
 
@@ -53,7 +54,7 @@ website score alone when social produced nothing. Bands: ≥75 strong, ≥50 fai
 |---|---|---|
 | **SEO** | Organic visibility | Meta titles/descriptions, heading structure, internal linking, schema, indexability, image alt coverage, the site-wide technical crawl, local-SEO signals, answer-engine structure, security, Core Web Vitals (Search Console facts are switched off in this edition) |
 | **UX/UI** | Conversion & lead capture | Value-proposition clarity, CTA visibility, lead forms (including popup and embedded), contact paths, trust signals, navigation, funnel friction |
-| **Social** | Audience growth & nurture | Bio optimisation and CTA clarity, posting cadence and consistency, engagement rate, content mix, link-in-bio funnel integration, cross-platform handle consistency |
+| **Social** | Audience growth & nurture | Bio optimisation and CTA clarity, posting cadence and consistency, engagement rate, content mix, link-in-bio funnel integration, cross-platform handle consistency (not evaluated in this edition: `SOCIAL_AUDITS_ENABLED=false`) |
 
 Every recommendation must serve one of two outcomes: **attract more qualified traffic**, or
 **convert traffic into leads**. The **full** report carries an executive summary, findings per area
@@ -95,9 +96,9 @@ and **polish** (the PDF is presentable to a prospect, not a dev artifact).
   UX/UI scored rules → deterministic findings → grounding check → branded PDF/DOCX, shaped by the
   report profile (full or teaser).
 - **Social audit:** Instagram + Facebook via Apify actors, YouTube via the free Data API v3 — public
-  data only, no login. 20 scored rules.
+  data only, no login. 20 scored rules. Off in this edition (`SOCIAL_AUDITS_ENABLED=false`).
 - **Combined audit** with Google Business Profile enrichment (Places API) and a tri-way website ↔
-  social ↔ GBP phone (NAP) check.
+  social ↔ GBP phone (NAP) check. Off in this edition (`SOCIAL_AUDITS_ENABLED=false`).
 - **AI Visibility:** how the brand appears in AI answers, read from the Semrush AI Visibility
   Toolkit by a saved-session browser bot + an OpenAI vision pass. Presentation-only, never scored.
   Auto-runs on every website/combined audit when enabled (`AI_VISIBILITY_ENABLED`, default off)

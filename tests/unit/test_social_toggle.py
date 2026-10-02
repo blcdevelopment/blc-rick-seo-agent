@@ -27,6 +27,7 @@ from apps.api import auth
 from apps.api.deps import get_db_session
 from apps.api.main import app
 from apps.api.routes import audits as audit_routes
+from apps.api.schemas import audits as audit_schemas
 from apps.shared.config import SOCIAL_AUDITS_DISABLED_MESSAGE, Settings
 from apps.shared.models import AuditJob, Base
 from apps.worker import tasks
@@ -80,6 +81,7 @@ def client_for(monkeypatch) -> Generator[Any, None, None]:
         settings = Settings(_env_file=None, audit_enqueue_enabled=False, **overrides)
         monkeypatch.setattr(auth, "get_settings", lambda: settings)
         monkeypatch.setattr(audit_routes, "get_settings", lambda: settings)
+        monkeypatch.setattr(audit_schemas, "get_settings", lambda: settings)
         return TestClient(app), factory
 
     app.dependency_overrides[get_db_session] = override_db
@@ -100,6 +102,11 @@ def test_off_refuses_any_request_that_carries_social_handles(client_for, public)
         # Refused with the same plain message in public mode too, not public mode's "social
         # links are optional" one.
         {"audit_type": "social", "social_handles": {"facebook": "acme"}},
+        # A social or combined request without handles (or without a URL) gets the same plain
+        # message, not a request to add the handle the next try would be refused for.
+        {"url": SITE, "audit_type": "combined"},
+        {"audit_type": "combined"},
+        {"audit_type": "social"},
     ]
     for body in requests:
         response = client.post("/audits", json=body)
@@ -133,6 +140,10 @@ def test_on_still_creates_combined_and_social_audits(client_for) -> None:
     with factory() as db:
         job = db.get(AuditJob, UUID(combined.json()["job_id"]))
         assert (job.audit_type, job.social_handles) == ("combined", {"instagram": "acme"})
+    # The request checks are unchanged: a combined audit still needs a handle.
+    no_handle = client.post("/audits", json={"url": SITE, "audit_type": "combined"})
+    assert no_handle.status_code == 422
+    assert "at least one social handle is required" in no_handle.text
 
 
 # --------------------------------------------------------------------------------------- worker
@@ -334,6 +345,76 @@ def test_off_ignores_the_handles_of_a_combined_job_queued_before_the_switch(
         _assert_website_only(job, tasks.get_settings())
 
     # Operator path: rerunning the enrichment must not bring social back.
+    tasks.rerun_external_enrichment_for_audit(job_id)
+
+    assert calls == []
+    with session_factory() as db:
+        job = db.get(AuditJob, UUID(job_id))
+        assert job.status == "complete"
+        _assert_website_only(job, tasks.get_settings())
+
+
+class _WorkerLost(BaseException):
+    """Stands in for the worker being killed mid-task: like SIGKILL, it is not an Exception, so
+    the task's handlers do not mark the job failed and it stays in progress."""
+
+
+def test_off_drops_social_data_left_by_an_attempt_lost_before_the_switch(
+    tmp_path, monkeypatch
+) -> None:
+    # Attempt 1 runs before the switch: the site's Instagram link promotes the website audit to
+    # a combined one and the social merge is committed. The worker is then lost while rendering
+    # (the mid-audit deploy that switches social off), and acks_late redelivers the task.
+    session_factory = _session(tmp_path)
+    _patch_settings(monkeypatch, session_factory, tmp_path)
+    strong = json.loads((FIXTURES / "social_instagram_strong.json").read_text())
+
+    def collector(settings, handles):
+        return extract_social_facts(
+            [{"platform": "instagram", "handle": "acme", "raw": strong}], now=NOW
+        )
+
+    def lost(*_args: Any, **_kwargs: Any) -> Any:
+        raise _WorkerLost()
+
+    real_render = tasks.render_audit_pdf
+    monkeypatch.setattr(tasks, "render_audit_pdf", lost)
+    job_id = _add_job(session_factory, url="https://example.com/", audit_type="website")
+    with pytest.raises(_WorkerLost):
+        tasks.run_collection_audit(
+            job_id,
+            crawler=_crawler_linking_instagram_and_youtube,
+            psi_collector=_fake_psi,
+            social_collector=collector,
+        )
+    with session_factory() as db:
+        job = db.get(AuditJob, UUID(job_id))
+        assert (job.status, job.audit_type) == ("rendering", "combined")
+        assert job.result.social_score is not None and job.result.social_facts
+
+    # Attempt 2, the redelivery, runs with the switch off: the audit completes website-only.
+    monkeypatch.setattr(tasks, "render_audit_pdf", real_render)
+    _patch_settings(
+        monkeypatch, session_factory, tmp_path, social_audits_enabled=False, **SOCIAL_KEYS
+    )
+    calls, forbidden_collector = _forbid_social_calls(monkeypatch)
+    tasks.run_collection_audit(
+        job_id,
+        crawler=_crawler_linking_instagram_and_youtube,
+        psi_collector=_fake_psi,
+        social_collector=forbidden_collector,
+    )
+
+    assert calls == []
+    with session_factory() as db:
+        job = db.get(AuditJob, UUID(job_id))
+        assert job.status == "complete"
+        _assert_website_only(job, tasks.get_settings())
+    detail = _api_detail(session_factory, job_id)
+    assert detail["social_score"] is None and detail["overall_score"] is None
+    assert detail["report"]["social_audit"] is None
+
+    # Operator path: a later enrichment rerun must not bring the overall score back.
     tasks.rerun_external_enrichment_for_audit(job_id)
 
     assert calls == []

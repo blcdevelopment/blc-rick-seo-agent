@@ -19,8 +19,8 @@ _Last reconciled: 2026-07-02._
 | `rubrics/seo.yaml` | `phase2-seo-v12` | `seo` | 48 | website + combined |
 | `rubrics/uxui.yaml` | `phase2-uxui-v3` | `uxui` | 14 | website + combined |
 | `rubrics/composite.yaml` | `phase1-composite-v1` | (weights) | — | website + combined |
-| `rubrics/social.yaml` | `phase2-social-v6` | `social` | 20 | social + combined |
-| `rubrics/overall.yaml` | `phase2-overall-v1` | (weights) | — | combined only |
+| `rubrics/social.yaml` | `phase2-social-v6` | `social` | 20 | social + combined (off in this edition) |
+| `rubrics/overall.yaml` | `phase2-overall-v1` | (weights) | — | combined only (off in this edition) |
 
 The first three are the **website** rubrics; their combined `rubric_version` stored on a
 website result is `phase2-seo-v12+phase2-uxui-v3+phase1-composite-v1`. (seo v12 is a
@@ -205,6 +205,10 @@ to the Overall Readiness score (§5b).
 
 ### 5a. Social Score (`rubrics/social.yaml`)
 
+> **Not in this edition:** with `SOCIAL_AUDITS_ENABLED=false` (the Rick edition) no new audit
+> collects social data, so none is scored against `social.yaml`. Only audits completed before
+> the switch carry a Social Score.
+
 The standalone **Social audit** is scored by the same rubric engine against
 `rubrics/social.yaml` (`version: phase2-social-v6`, `category: social`, 20 rules,
 `normalization: rescale_to_max`, `max_score: 100`). v2 added four content-depth rules
@@ -225,6 +229,10 @@ into the website composite. The `social` category was added to `Rubric.category`
 (`Literal["seo", "uxui", "social"]`) so the engine loads this rubric — see §7.
 
 ### 5b. Overall Lead-Gen Readiness (`rubrics/overall.yaml`) — combined audits only
+
+> **Not in this edition:** with `SOCIAL_AUDITS_ENABLED=false` (the Rick edition) there are no
+> new combined audits, so no new audit gets an Overall score; the headline is the website's
+> Lead-Gen Readiness (§5). Only audits completed before the switch carry one.
 
 A **combined** audit (one form: a website URL **plus** ≥1 social handle) runs the untouched
 website pipeline first, then the social audit, and appends an **Overall Lead-Gen Readiness**

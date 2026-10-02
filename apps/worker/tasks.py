@@ -885,6 +885,18 @@ def run_collection_audit(
             # With social audits switched off there is no social step for any job: no link
             # discovery and no collection, even for a combined job queued before the switch with
             # typed handles (they stay stored, unused), so the report stays website-only.
+            if not settings.social_audits_enabled and (
+                result.social_score is not None or result.social_facts
+            ):
+                # A task redelivered after its worker was lost across the deploy that switched
+                # social audits off can find the social data its first attempt merged (at 96%)
+                # before dying; the website upsert above does not touch it. Drop it, or the
+                # report would still show a social section. An audit completed before the switch
+                # never reaches this line (the COMPLETE return above) and keeps its own.
+                result.social_score = None
+                result.social_facts = None
+                db.commit()
+                db.refresh(result)
             effective_handles = (
                 _resolve_social_handles_safely(job, crawl_result, settings)
                 if settings.social_audits_enabled
