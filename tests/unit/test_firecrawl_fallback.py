@@ -13,6 +13,7 @@ import hashlib
 import ipaddress
 import json
 import logging
+import time
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -43,8 +44,10 @@ from apps.worker.stages.crawler import (
 )
 from apps.worker.stages.extractor_uxui import extract_uxui_facts_for_page
 from apps.worker.stages.firecrawl_fallback import (
+    OFF_SITE_PAGE_REASON,
     PAGE_FETCH_FAILED_REASON,
-    count_fallback_audit,
+    give_back_pages,
+    reserve_allowance,
     scrape_request_body,
 )
 from apps.worker.stages.report_payload import FETCHED_THROUGH_SERVICE_NOTE, compose_report_payload
@@ -79,6 +82,52 @@ SG_CHALLENGE_PAGE = (
     f"{HOST}</h1><p>Checking the site connection security</p></div></section><footer><p>This "
     "page requires cookies to be enabled in your browser settings. Please check this setting and "
     "enable cookies (if disabled)</p></footer></body></html>"
+)
+
+
+# Bot-check pages Firecrawl can tell only by their markup (it reports no response headers). Abridged
+# from the vendors' challenge pages: their identifying strings kept, tokens shortened.
+AWS_WAF_CHALLENGE_PAGE = (
+    '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title></title><script>'
+    'window.awsWafCookieDomainList = [];window.gokuProps = {"key":"AQIDAHjcYu","iv":"D549","context'
+    '":"hD1c"};</script><script src="https://3ec7f2a0b1c2.edge.sdk.awswaf.com/3ec7f2a0b1c2/'
+    '4e5d6f/challenge.js"></script></head><body><div id="challenge-container"></div><script>'
+    "AwsWafIntegration.saveReferrer();AwsWafIntegration.checkForceRefresh().then((r) => {"
+    "AwsWafIntegration.getToken().then(() => {window.location.reload(true);});});</script>"
+    "<noscript><h1>JavaScript is disabled</h1></noscript></body></html>"
+)
+# Cloudflare localises its title, so only the challenge's options object is certain.
+CLOUDFLARE_CHALLENGE_PAGE = (
+    '<!DOCTYPE html><html lang="fr-FR"><head><title>Un instant…</title></head><body>'
+    "<noscript>Activez JavaScript et les cookies pour continuer</noscript><script>(function(){"
+    "window._cf_chl_opt={cvId: '3',cZone: 'www.acme-builders.example',cType: 'managed'};var "
+    "a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/h/b/orchestrate/"
+    "chl_page/v1?ray=8c0ffee';document.getElementsByTagName('head')[0].appendChild(a);}());"
+    "</script></body></html>"
+)
+VERCEL_CHECKPOINT_PAGE = (
+    "<!DOCTYPE html><html><head><title>Vercel Security Checkpoint</title>"
+    '<script src="/.well-known/vercel/security/static/challenge.v2.min.js"></script></head>'
+    "<body><p>We're verifying your browser</p></body></html>"
+)
+# SiteGround's challenge with its title and noscript refresh gone: its script alone gives it away.
+SG_NOSCRIPT_REFRESH = (
+    '<noscript><meta http-equiv="refresh" content="0;/.well-known/captcha/?r=%2F"></noscript>'
+)
+SG_CHALLENGE_SCRIPT_ONLY = SG_CHALLENGE_PAGE.replace(
+    "<title>Robot Challenge Screen</title>", ""
+).replace(SG_NOSCRIPT_REFRESH, "")
+# What ORDINARY pages carry: Cloudflare's JS-detection script (from the same /cdn-cgi/
+# challenge-platform/ prefix) and AWS WAF's JavaScript integration (from awswaf.com).
+CLOUDFLARE_PROXIED_EXTRA = (
+    "<script>(function(){var d=document.createElement('script');d.innerHTML=\"window.__CF$cv$"
+    "params={r:'8c0ffee',t:'MTcyNzg2'};var a=document.createElement('script');a.src='/cdn-cgi/"
+    "challenge-platform/h/b/scripts/jsd/e0c90b6a3ed1/main.js';document.getElementsByTagName("
+    "'head')[0].appendChild(a);\";document.head.appendChild(d);})();</script>"
+)
+AWS_WAF_INTEGRATION_EXTRA = (
+    '<script src="https://3ec7f2a0b1c2.edge.sdk.awswaf.com/3ec7f2a0b1c2/4e5d6f/'
+    'challenge.compact.js" defer></script><script>AwsWafIntegration.getToken();</script>'
 )
 
 
@@ -165,11 +214,23 @@ class FakeFirecrawl:
 
 
 class FakeRedis:
-    """The two Redis calls the daily counter makes (a MULTI/EXEC pipeline of INCR + EXPIRE)."""
+    """The Redis commands the caps use: INCR / INCRBY / DECR / DECRBY / EXPIRE, queued in a
+    MULTI/EXEC pipeline, plus a direct DECRBY."""
 
     def __init__(self) -> None:
         self.counts: dict[str, int] = {}
         self.ttls: dict[str, int] = {}
+
+    def _apply(self, op: str, key: str, amount: int = 1):
+        if op == "expire":
+            self.ttls[key] = amount
+            return True
+        sign = -1 if op.startswith("decr") else 1
+        self.counts[key] = self.counts.get(key, 0) + sign * amount
+        return self.counts[key]
+
+    def decrby(self, key: str, amount: int) -> int:
+        return self._apply("decrby", key, amount)
 
     def pipeline(self, transaction: bool = True) -> FakeRedis._Pipeline:
         assert transaction is True
@@ -190,21 +251,30 @@ class FakeRedis:
             return False
 
         def incr(self, key: str) -> None:
-            self._ops.append(("incr", key))
+            self._ops.append(("incr", key, 1))
+
+        def incrby(self, key: str, amount: int) -> None:
+            self._ops.append(("incrby", key, amount))
+
+        def decr(self, key: str) -> None:
+            self._ops.append(("decr", key, 1))
+
+        def decrby(self, key: str, amount: int) -> None:
+            self._ops.append(("decrby", key, amount))
 
         def expire(self, key: str, seconds: int) -> None:
             self._ops.append(("expire", key, seconds))
 
         def execute(self) -> list:
-            results: list = []
-            for op in self._ops:
-                if op[0] == "incr":
-                    self._store.counts[op[1]] = self._store.counts.get(op[1], 0) + 1
-                    results.append(self._store.counts[op[1]])
-                else:
-                    self._store.ttls[op[1]] = op[2]
-                    results.append(True)
-            return results
+            return [self._store._apply(*op) for op in self._ops]
+
+
+def _day_key(now: datetime | None = None) -> str:
+    return f"firecrawl_fallback:audits:{(now or datetime.now(UTC)):%Y-%m-%d}"
+
+
+def _month_key(now: datetime | None = None) -> str:
+    return f"firecrawl_fallback:pages:{(now or datetime.now(UTC)):%Y-%m}"
 
 
 class _Context:
@@ -473,9 +543,11 @@ def test_the_whole_audit_completes_and_reports_how_pages_were_fetched(
         lambda: _settings(
             world,
             google_psi_api_key=None,
-            site_health_enabled=False,
+            # The site-health sweep runs, and must send nothing to the site that blocks us.
+            site_health_enabled=True,
             screaming_frog_enabled=False,
             google_oauth_client_id="",
+            local_report_storage_dir=tmp_path / "reports",
         ),
     )
     pdf_path = tmp_path / "report.pdf"
@@ -516,8 +588,19 @@ def test_the_whole_audit_completes_and_reports_how_pages_were_fetched(
         payload = compose_report_payload(job, result, settings=_settings(world))
         assert payload.crawl_summary.note == FETCHED_THROUGH_SERVICE_NOTE
         assert "irecrawl" not in payload.model_dump_json()  # no vendor name for visitors
+        technical = result.external_seo_facts["technical_crawl"]
+        assert (technical["status"], technical["reason"]) == ("partial", "bot_blocked")
     # PageSpeed (fetched by Google) gets the real pages' addresses, never a check's.
     assert psi_urls == [[f"{SITE}/", f"{SITE}/about-us"]]
+
+    # The enrichment rerun reads the stored crawl JSON: still nothing sent from this server.
+    tasks.rerun_external_enrichment_for_audit(job_id)
+    with session() as db:
+        job = db.get(AuditJob, job_id)
+        assert job.status == AuditStatus.COMPLETE.value
+        technical = job.result.external_seo_facts["technical_crawl"]
+        assert (technical["status"], technical["reason"]) == ("partial", "bot_blocked")
+    assert all(request.url.host != HOST for request in world.firecrawl.requests)
 
 
 # --- Fallback off, or not for this failure: exactly the old behaviour ---------------------------
@@ -532,9 +615,10 @@ def test_without_a_key_the_plain_blocked_error_stands_and_firecrawl_is_never_cal
     assert world.redis.counts == {}
 
 
-def test_an_empty_key_or_a_zero_daily_limit_is_off_too(world) -> None:
+def test_an_empty_key_or_a_zero_limit_is_off_too(world) -> None:
     assert _blocked(world, firecrawl_api_key="  ") is world.homepage
     assert _blocked(world, crawler_firecrawl_daily_limit=0) is world.homepage
+    assert _blocked(world, crawler_firecrawl_monthly_page_limit=0) is world.homepage
     assert world.firecrawl.requests == []
     assert world.redis.counts == {}
 
@@ -592,21 +676,85 @@ def test_the_daily_limit_counts_fallback_audits_and_then_keeps_the_plain_error(w
     assert error is world.homepage
     assert str(error) == BOT_CHECK_BLOCKED_MESSAGE
     assert len(world.firecrawl.requests) == calls  # nothing sent past the limit
-    today = datetime.now(UTC).strftime("%Y-%m-%d")
-    assert world.redis.counts == {f"firecrawl_fallback:{today}": 3}
+    # The refused audit took nothing: two audits, two pages each (8 reserved, 6 given back).
+    assert world.redis.counts == {_day_key(): 2, _month_key(): 4}
 
 
-def test_the_daily_counter_is_one_dated_key_with_a_two_day_expiry(world) -> None:
-    settings = _settings(world)
-    day = datetime(2026, 10, 2, 23, 59, tzinfo=UTC)
-    assert count_fallback_audit(settings, now=day) == 1
-    assert count_fallback_audit(settings, now=day) == 2
-    assert count_fallback_audit(settings, now=datetime(2026, 10, 3, 0, 1, tzinfo=UTC)) == 1
+def test_each_audit_reserves_its_page_cap_and_gives_back_what_it_did_not_send(
+    world, monkeypatch
+) -> None:
+    world.firecrawl.pages[f"{SITE}/"] = _scraped(
+        f"{SITE}/", _page_html("Acme", "/a/", "/b/", "/c/", "/d/")
+    )
+    reserved: list[int] = []
+    real_reserve = firecrawl_fallback.reserve_allowance
+
+    def _spy(settings, pages, now=None):
+        reserved.append(pages)
+        # Mid-audit, before any page is sent, the full cap is already counted.
+        allowance = real_reserve(settings, pages, now)
+        assert world.redis.counts[_month_key()] == pages
+        return allowance
+
+    monkeypatch.setattr(firecrawl_fallback, "reserve_allowance", _spy)
+    result = _crawl(world, crawler_firecrawl_max_pages=8)
+    assert reserved == [8]
+    assert len(result.pages) == 5
+    assert world.redis.counts[_month_key()] == 5  # 3 unused pages given back
+
+
+def test_the_monthly_page_limit_is_never_exceeded(world) -> None:
+    world.firecrawl.pages[f"{SITE}/"] = _scraped(
+        f"{SITE}/", _page_html("Acme", "/a/", "/b/", "/c/", "/d/", "/e/", "/f/", "/g/")
+    )
+    limits = {"crawler_firecrawl_max_pages": 8, "crawler_firecrawl_monthly_page_limit": 12}
+
+    first = _crawl(world, **limits)  # reserves 8 of 12 and sends all 8
+    error = _blocked(world, **limits)  # 8 more would make 16
+
+    assert len(first.pages) == 8
+    assert error is world.homepage
+    assert len(world.firecrawl.scraped) == 8
+    assert world.redis.counts == {_day_key(): 1, _month_key(): 8}
+    # A smaller audit still fits in what is left.
+    smaller = _crawl(world, crawler_firecrawl_max_pages=4, crawler_firecrawl_monthly_page_limit=12)
+    assert len(smaller.pages) == 4
+    assert world.redis.counts[_month_key()] == 12
+    assert len(world.firecrawl.scraped) == 12
+
+
+def test_reservations_use_dated_keys_that_expire_and_refusals_take_nothing(world) -> None:
+    settings = _settings(
+        world, crawler_firecrawl_daily_limit=2, crawler_firecrawl_monthly_page_limit=20
+    )
+    late = datetime(2026, 10, 31, 23, 59, tzinfo=UTC)
+    first = reserve_allowance(settings, 8, now=late)
+    assert first.refused is None and first.month_key == "firecrawl_fallback:pages:2026-10"
+    assert reserve_allowance(settings, 8, now=late).refused is None
+    assert reserve_allowance(settings, 1, now=late).refused == "daily_limit_reached"
+    # Next day and next month: fresh keys, the month's pages counted on their own.
+    november = datetime(2026, 11, 1, 0, 1, tzinfo=UTC)
+    assert reserve_allowance(settings, 8, now=november).refused is None
+    assert reserve_allowance(settings, 8, now=november).refused is None
+    assert reserve_allowance(settings, 8, now=november).refused == "daily_limit_reached"
+    give_back_pages(settings, first, 6)
     assert world.redis.counts == {
-        "firecrawl_fallback:2026-10-02": 2,
-        "firecrawl_fallback:2026-10-03": 1,
+        "firecrawl_fallback:audits:2026-10-31": 2,
+        "firecrawl_fallback:pages:2026-10": 10,
+        "firecrawl_fallback:audits:2026-11-01": 2,
+        "firecrawl_fallback:pages:2026-11": 16,
     }
-    assert set(world.redis.ttls.values()) == {2 * 24 * 60 * 60}
+    assert world.redis.ttls == {
+        "firecrawl_fallback:audits:2026-10-31": 2 * 24 * 60 * 60,
+        "firecrawl_fallback:pages:2026-10": 40 * 24 * 60 * 60,
+        "firecrawl_fallback:audits:2026-11-01": 2 * 24 * 60 * 60,
+        "firecrawl_fallback:pages:2026-11": 40 * 24 * 60 * 60,
+    }
+    refused = reserve_allowance(
+        _settings(world, crawler_firecrawl_monthly_page_limit=20), 8, now=november
+    )
+    assert refused.refused == "monthly_limit_reached"
+    assert world.redis.counts["firecrawl_fallback:pages:2026-11"] == 16
 
 
 def test_no_redis_means_no_fallback(world, monkeypatch) -> None:
@@ -677,10 +825,16 @@ def test_a_firecrawl_timeout_keeps_the_plain_message(world, monkeypatch) -> None
     assert _blocked(world) is world.homepage
 
 
-def test_a_homepage_firecrawl_finds_missing_fails_like_the_browser_would(world) -> None:
-    world.firecrawl.pages[f"{SITE}/"] = _scraped(f"{SITE}/", "<html>gone</html>", status=404)
+@pytest.mark.parametrize("status", [202, 203, 404, 410, 429, 500, 503])
+def test_a_homepage_firecrawl_gets_anything_but_200_for_keeps_the_plain_message(
+    world, status
+) -> None:
+    # Firecrawl reports no headers: a check that only its headers give away (AWS WAF's 202,
+    # say) shows only as a status other than 200, and is never scored as the homepage.
+    world.firecrawl.pages[f"{SITE}/"] = _scraped(f"{SITE}/", _page_html("Acme"), status=status)
     error = _blocked(world)
-    assert str(error) == http_error_message(404)
+    assert error is world.homepage
+    assert world.firecrawl.scraped == [f"{SITE}/"]
 
 
 def test_a_homepage_redirected_to_another_site_fails_like_the_browser_would(world) -> None:
@@ -689,6 +843,161 @@ def test_a_homepage_redirected_to_another_site_fails_like_the_browser_would(worl
     )
     with pytest.raises(CrawlerError, match="redirected outside the starting site"):
         _crawl(world)
+
+
+@pytest.mark.parametrize(
+    ("html", "status"),
+    [
+        (AWS_WAF_CHALLENGE_PAGE, 202),
+        (AWS_WAF_CHALLENGE_PAGE, 200),
+        (CLOUDFLARE_CHALLENGE_PAGE, 403),
+        (CLOUDFLARE_CHALLENGE_PAGE, 200),
+        (VERCEL_CHECKPOINT_PAGE, 200),
+        (SG_CHALLENGE_SCRIPT_ONLY, 200),
+    ],
+)
+def test_a_check_only_its_markup_gives_away_is_never_scored(world, html, status) -> None:
+    assert "Robot Challenge Screen" not in SG_CHALLENGE_SCRIPT_ONLY
+    assert SG_NOSCRIPT_REFRESH not in SG_CHALLENGE_SCRIPT_ONLY
+    world.firecrawl.pages[f"{SITE}/"] = _scraped(f"{SITE}/", html, status=status)
+    assert _blocked(world) is world.homepage
+    assert world.firecrawl.scraped == [f"{SITE}/"]
+
+
+def test_ordinary_pages_with_vendor_scripts_are_not_checks(world) -> None:
+    html = _page_html(
+        "Acme", "/about-us/", extra=CLOUDFLARE_PROXIED_EXTRA + AWS_WAF_INTEGRATION_EXTRA
+    )
+    world.firecrawl.pages[f"{SITE}/"] = _scraped(f"{SITE}/", html)
+    world.firecrawl.pages[f"{SITE}/about-us"] = _scraped(f"{SITE}/about-us", html)
+    result = _crawl(world)
+    assert [page.final_url for page in result.pages] == [f"{SITE}/", f"{SITE}/about-us"]
+    assert result.failed_pages == []
+
+
+@pytest.mark.parametrize(
+    ("html", "status", "reason", "walls"),
+    [
+        (AWS_WAF_CHALLENGE_PAGE, 202, BOT_CHECK_PAGE_REASON, True),
+        (CLOUDFLARE_CHALLENGE_PAGE, 403, BOT_CHECK_PAGE_REASON, True),
+        ("<html><body>Please wait</body></html>", 202, BOT_CHECK_PAGE_REASON, True),
+        ("<html><body>Partial</body></html>", 203, PAGE_FETCH_FAILED_REASON, False),
+    ],
+)
+def test_an_internal_page_that_is_a_check_or_not_a_200_is_not_scored(
+    world, html, status, reason, walls
+) -> None:
+    world.firecrawl.pages[f"{SITE}/"] = _scraped(f"{SITE}/", _page_html("Acme", "/a/", "/b/"))
+    first = crawler.discover_internal_links(_page_html("Acme", "/a/", "/b/"), f"{SITE}/")[0].url
+    world.firecrawl.pages[first] = _scraped(first, html, status=status)
+
+    result = _crawl(world)
+
+    assert [(page["url"], page["reason"]) for page in result.failed_pages] == [(first, reason)]
+    if walls:
+        assert [page["reason"] for page in result.skipped_pages] == ["stopped_after_bot_check"]
+        assert len(result.pages) == 1
+    else:
+        assert result.skipped_pages == [] and len(result.pages) == 2
+
+
+def test_an_internal_page_that_lands_elsewhere_or_on_a_private_address_is_not_scored(
+    world, monkeypatch
+) -> None:
+    def _resolve(host: str):
+        private = host == "acme-builders.example"
+        return [ipaddress.ip_address("10.0.0.7" if private else "93.184.216.34")]
+
+    monkeypatch.setattr(crawler, "_resolve_host_ips", _resolve)
+    world.firecrawl.pages[f"{SITE}/"] = _scraped(
+        f"{SITE}/", _page_html("Acme", "/portal/", "/staff/", "/about/")
+    )
+    world.firecrawl.pages[f"{SITE}/portal"] = _scraped(
+        f"{SITE}/portal", _page_html("Client portal"), final_url="https://portal.saas.example/"
+    )
+    world.firecrawl.pages[f"{SITE}/staff"] = _scraped(
+        f"{SITE}/staff", _page_html("Staff"), final_url="https://acme-builders.example/staff"
+    )
+
+    result = _crawl(world)
+
+    assert {page["url"]: page["reason"] for page in result.failed_pages} == {
+        f"{SITE}/portal": OFF_SITE_PAGE_REASON,
+        f"{SITE}/staff": PAGE_FETCH_FAILED_REASON,
+    }
+    assert [page.final_url for page in result.pages] == [f"{SITE}/", f"{SITE}/about"]
+    assert result.skipped_pages == []
+
+
+def test_another_websites_401_or_403_after_a_redirect_never_falls_back(world) -> None:
+    world.homepage = _http_error(403, own_site=False)
+    error = _blocked(world)
+    assert error is world.homepage
+    assert str(error) == http_error_message(403)
+    assert world.firecrawl.requests == []
+
+
+# --- Size caps and overall timeouts -------------------------------------------------------------
+
+
+def test_a_homepage_over_the_html_cap_keeps_the_plain_message(world, monkeypatch) -> None:
+    monkeypatch.setattr(firecrawl_fallback, "_RAW_HTML_MAX_CHARS", 2000)
+    world.firecrawl.pages[f"{SITE}/"] = _scraped(f"{SITE}/", _page_html("Acme") + "x" * 2000)
+    assert _blocked(world) is world.homepage
+
+
+def test_an_internal_page_over_the_html_cap_is_not_loaded(world, monkeypatch) -> None:
+    monkeypatch.setattr(firecrawl_fallback, "_RAW_HTML_MAX_CHARS", 2000)
+    world.firecrawl.pages[f"{SITE}/about-us"] = _scraped(
+        f"{SITE}/about-us", _page_html("About") + "x" * 2000
+    )
+    result = _crawl(world)
+    assert [(page["url"], page["reason"]) for page in result.failed_pages] == [
+        (f"{SITE}/about-us", PAGE_FETCH_FAILED_REASON)
+    ]
+
+
+@pytest.mark.parametrize("declared", [True, False])
+def test_an_answer_over_the_byte_cap_is_never_read_in_full(world, monkeypatch, declared) -> None:
+    monkeypatch.setattr(firecrawl_fallback, "_RESPONSE_MAX_BYTES", 4096)
+    body = json.dumps(_scraped(f"{SITE}/", _page_html("Acme") + "x" * 8192)).encode()
+    if declared:
+        answer = httpx.Response(200, content=body)  # carries its content-length
+    else:
+        answer = httpx.Response(200, stream=httpx.ByteStream(body))  # streamed, no length
+        assert "content-length" not in answer.headers
+    world.firecrawl.pages[f"{SITE}/"] = answer
+    assert _blocked(world) is world.homepage
+
+
+def test_a_hanging_firecrawl_answer_is_cut_by_the_overall_timeout(world, monkeypatch) -> None:
+    monkeypatch.setattr(firecrawl_fallback, "_request_timeout_seconds", lambda _settings: 0.05)
+
+    async def _hangs(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(30)
+        raise AssertionError("never answered")
+
+    monkeypatch.setattr(world.firecrawl, "handler", _hangs)
+    started = time.monotonic()
+    assert _blocked(world) is world.homepage
+    assert time.monotonic() - started < 5
+
+
+def test_a_hanging_screenshot_download_is_cut_by_the_overall_timeout(world, monkeypatch) -> None:
+    monkeypatch.setattr(firecrawl_fallback, "_SCREENSHOT_TIMEOUT_SECONDS", 0.05)
+    answer = world.firecrawl.handler
+
+    async def _slow_shots(request: httpx.Request) -> httpx.Response:
+        if request.url.host == SHOTS:
+            await asyncio.sleep(30)
+        return answer(request)
+
+    monkeypatch.setattr(world.firecrawl, "handler", _slow_shots)
+    started = time.monotonic()
+    page = _crawl(world, crawler_firecrawl_max_pages=1).pages[0]
+    assert time.monotonic() - started < 5
+    assert page.screenshot_path is None
+    assert page.screenshot_error == "screenshot download timed out"
 
 
 # --- Internal pages ---------------------------------------------------------------------------
@@ -874,6 +1183,33 @@ def test_one_log_line_per_fallback_audit(world, caplog) -> None:
     assert "outcome=daily_limit_reached" in lines[2] and "requests=0" in lines[2]
 
 
+def _fallback_levels(caplog) -> list[tuple[str, str]]:
+    return [
+        (record.levelname, record.getMessage().split(" outcome=")[1].split(" ")[0])
+        for record in caplog.records
+        if record.getMessage().startswith("firecrawl_fallback audit_id")
+    ]
+
+
+def test_caps_and_key_or_credit_refusals_are_logged_as_warnings(world, caplog) -> None:
+    caplog.set_level(logging.INFO)
+    _crawl(world)
+    _blocked(world, crawler_firecrawl_daily_limit=1)
+    _blocked(world, crawler_firecrawl_monthly_page_limit=9)
+    for status in (401, 402, 429):
+        world.firecrawl.pages[f"{SITE}/"] = httpx.Response(status, json={"success": False})
+        _blocked(world)
+
+    assert _fallback_levels(caplog) == [
+        ("INFO", "complete"),
+        ("WARNING", "daily_limit_reached"),
+        ("WARNING", "monthly_limit_reached"),
+        ("WARNING", "service_error"),  # 401: a bad key
+        ("WARNING", "service_error"),  # 402: no credits left
+        ("INFO", "service_error"),  # 429: Firecrawl's rate limit, passes by itself
+    ]
+
+
 def test_the_key_never_appears_in_logs_errors_or_stored_data(world, caplog) -> None:
     caplog.set_level(logging.DEBUG)
     outputs: list[str] = []
@@ -901,17 +1237,29 @@ def test_firecrawl_settings_defaults_and_bounds() -> None:
     assert Settings.model_fields["firecrawl_api_key"].default is None
     assert firecrawl_fallback.is_enabled(settings) is False
     assert settings.firecrawl_api_url == "https://api.firecrawl.dev"
-    assert settings.crawler_firecrawl_max_pages == 10
-    assert settings.crawler_firecrawl_daily_limit == 30
+    # Fits Firecrawl's free plan (1,000 credits a month, one per page): 8 pages an audit,
+    # 10 audits (80 credits) a day, 900 credits a month.
+    assert settings.crawler_firecrawl_max_pages == 8
+    assert settings.crawler_firecrawl_daily_limit == 10
+    assert settings.crawler_firecrawl_monthly_page_limit == 900
     assert Settings(firecrawl_api_url="https://fc.example/ ").firecrawl_api_url == (
         "https://fc.example"
     )
+    # The key is never sent in cleartext: https, or http to this machine only.
+    for local in ("http://localhost:3002", "http://127.0.0.1:3002/", "http://[::1]:3002"):
+        assert Settings(firecrawl_api_url=local).firecrawl_api_url == local.rstrip("/")
     for bad in (
         {"firecrawl_api_url": "api.firecrawl.dev"},
+        {"firecrawl_api_url": "http://api.firecrawl.dev"},
+        {"firecrawl_api_url": "http://firecrawl.internal:3002"},
+        {"firecrawl_api_url": "ftp://api.firecrawl.dev"},
+        {"firecrawl_api_url": "https://"},
         {"crawler_firecrawl_max_pages": 0},
         {"crawler_firecrawl_max_pages": 26},
         {"crawler_firecrawl_daily_limit": -1},
         {"crawler_firecrawl_daily_limit": 1001},
+        {"crawler_firecrawl_monthly_page_limit": -1},
+        {"crawler_firecrawl_monthly_page_limit": 1_000_001},
     ):
         with pytest.raises(ValueError):
             Settings(**bad)

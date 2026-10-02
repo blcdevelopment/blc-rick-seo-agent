@@ -156,22 +156,32 @@ one report (PDF and DOCX). Known limits of that flow:
 - **Blocked homepage: the Firecrawl fallback** (only when `FIRECRAWL_API_KEY` is set). When the
   site's own check, or a 401/403, keeps the browser off the homepage, the pages are fetched
   through Firecrawl instead (`apps/worker/stages/firecrawl_fallback.py`): standard mode only (no
-  stealth proxy, no CAPTCHA solving), one attempt per page, one page at a time, at most
-  `CRAWLER_FIRECRAWL_MAX_PAGES` (10) pages and `CRAWLER_FIRECRAWL_DAILY_LIMIT` (30) fallback
-  audits per UTC day (a Redis counter; if Redis cannot count, there is no fallback). If Firecrawl
-  is shown the check or a 401/403 too, fails, or the day's allowance is used up, the audit fails
-  with the same plain message as before. Not covered: 404/410/429/5xx, timeouts, DNS errors, and a
-  blocked internal page on a site whose homepage loaded. What differs from a browser crawl:
-  - the pages are the real HTML Firecrawl's browser rendered, so every analyser runs unchanged,
-    but forms inside iframes are not counted (a known form provider's embed is still credited
-    from the HTML), the optional axe accessibility pass has no result for these pages, and the
-    stored text length counts text that CSS may hide;
+  stealth proxy, no CAPTCHA solving), one attempt per page, one page at a time. Caps, counted
+  atomically in Redis before anything is sent (if Redis cannot count, there is no fallback):
+  `CRAWLER_FIRECRAWL_MAX_PAGES` (8) pages an audit, `CRAWLER_FIRECRAWL_DAILY_LIMIT` (10)
+  fallback audits a UTC day, and `CRAWLER_FIRECRAWL_MONTHLY_PAGE_LIMIT` (900) pages a UTC month
+  (one Firecrawl credit each; the free plan has 1,000 a month). An answer over 8 MB, or a page
+  over 5 million characters of HTML, is refused unread. If Firecrawl is shown the check too,
+  answers the homepage with anything but HTTP 200, fails, or a cap is reached, the audit fails
+  with the same plain message as before. Not covered: 404/410/429/5xx, timeouts, DNS errors, a
+  401/403 answered by another website a redirect led to, and a blocked internal page on a site
+  whose homepage loaded. What differs from a browser crawl:
+  - the pages are the real HTML Firecrawl returned, so every analyser runs unchanged, but forms
+    inside iframes are not counted (a known form provider's embed is still credited from the
+    HTML), the optional axe accessibility pass has no result for these pages, and the stored
+    text length counts text that CSS may hide;
+  - Firecrawl reports no response headers, so a bot check is recognised by its address, status,
+    title or own markup; one that shows none of these to Firecrawl could still be scored;
+  - an internal page that Firecrawl ends on another website, or on a non-public address, is
+    listed as failed, not scored (a browser crawl scores where a link lands);
   - the full-page screenshots come from Firecrawl (its window may be wider than 1280 px);
-  - robots.txt and the site-health link check still come from this server, so they stay limited
-    by the bot check (robots "unavailable", the sweep `partial: bot_blocked`);
-  - the report's "Page coverage" (PDF) and its header (DOCX) say the pages were fetched through a
-    rendering service; the crawl JSON stores `fetched_via: "firecrawl"` and what blocked the
-    browser.
+  - robots.txt still comes from this server ("unavailable" when the check answers it, so no
+    rules apply), and the site-health check sends nothing from this server: its sitemap and
+    link checks are skipped and it reports `partial: bot_blocked` (its on-page checks still
+    run), so broken links are not checked on such a site;
+  - the report's "Page coverage" (PDF), its header (DOCX) and the web page say the pages were
+    fetched through a rendering service; the crawl JSON stores `fetched_via: "firecrawl"` and
+    what blocked the browser.
 - **Form detection errs toward credit (accepted tradeoff, 2026-07-03).** Popup/embedded
   lead forms are detected via provider signatures matched anywhere in the page HTML and a
   bounded runtime frame pass, so (a) a page merely *mentioning* a form provider (e.g. a blog

@@ -3,7 +3,7 @@
 Fallback only. crawl_site comes here when, and only when, the HOMEPAGE was kept from our own
 browser by the audited site's security (``crawler.site_security_block``: its bot check never let
 the browser through, only a person could clear it, or it refused the browser with HTTP 401/403),
-a Firecrawl key is set and the daily allowance is on. Every other site, and every other failure
+a Firecrawl key is set and the allowances are on. Every other site, and every other failure
 (404/410/429/5xx, a timeout, DNS, a blocked internal page on a reachable site), keeps the browser
 crawl exactly as before.
 
@@ -13,9 +13,11 @@ answers become the same CrawledPage / CrawlResult the browser crawl builds, so e
 downstream (SEO, UX/UI and lead-gen facts, social discovery, the site-health link inventory,
 PageSpeed, the report) runs unchanged on the real pages:
 
-- ``html``: Firecrawl's ``rawHtml``, the rendered document as the browser's ``page.content()``
-  gives it, <head> included (Firecrawl's ``html`` format drops the head, so it is not used). Every
-  analyser reads only this HTML, so they all run on the real markup unchanged.
+- ``html``: Firecrawl's ``rawHtml``, the page's full HTML, <head> included (Firecrawl's ``html``
+  format drops the head, so it is not used). For a page Firecrawl's browser rendered it is the
+  document after the page's scripts ran, like the browser's ``page.content()``; when Firecrawl
+  answers from a plain fetch or its cache instead, it is the HTML the server sent. Every analyser
+  reads only this HTML, so they all run on the real markup unchanged.
 - ``final_url`` and ``status_code``: Firecrawl's metadata (``url`` after redirects, ``statusCode``).
 - ``title``: the document's <title>, as the browser's ``document.title`` reads it.
 - ``text``: the body's text from the HTML, without scripts, styles, noscript, templates and SVG.
@@ -37,22 +39,35 @@ PageSpeed, the report) runs unchanged on the real pages:
 - ``passed_interstitial`` = None (our browser passed no check). Every page and the crawl carry
   ``fetched_via = "firecrawl"``, and the crawl names what blocked the browser.
 
-Not routed through Firecrawl (cost): robots.txt and the site-health sweep still come from this
-server and degrade as before (robots "unavailable", the sweep ``partial: bot_blocked``). PageSpeed
-is fetched by Google from the pages' real addresses, unchanged.
+Not routed through Firecrawl (cost): robots.txt still comes from this server ("unavailable" when
+the check answers it, which applies no rules). The site-health sweep sends nothing from this
+server for such a crawl (site_health reads ``fetched_via``): every request would meet the same
+wall, and a plain 403 would read as broken pages. It keeps its on-page checks over the fetched
+pages and reports ``partial: bot_blocked``. PageSpeed is fetched by Google from the pages' real
+addresses, unchanged.
+
+Caps, all counted atomically in Redis before anything is sent (one credit per page, its
+screenshot included): at most ``crawler_firecrawl_max_pages`` pages per audit, at most
+``crawler_firecrawl_daily_limit`` fallback audits per UTC day, and never more than
+``crawler_firecrawl_monthly_page_limit`` pages per UTC month (an audit reserves its full page cap
+up front and gives back what it did not send).
 
 The audit fails with the browser's original plain message when Firecrawl is shown the site's
-check too (the crawler's own markers on its final address, status or title, or a meta refresh into
-a check's address) or a 401/403, when Firecrawl itself fails, when the day's allowance is used up
-or cannot be counted, and when the address is not a public one. The key is sent only to Firecrawl,
-in a header, and never logged.
+check too (the crawler's own markers on its final address, status or title, a meta refresh into a
+check's address, a check's own markup, or a 202) or answers anything but 200 for the homepage,
+when Firecrawl itself fails or answers more than the size caps, when an allowance is used up or
+cannot be counted, and when the address is not a public one. The key is sent only to Firecrawl,
+over https, in a header, and never logged.
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
+import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -73,7 +88,6 @@ from apps.worker.stages.crawler import (
     CrawlResult,
     RobotsPolicy,
     SiteBlockedError,
-    _http_error,
     _screenshot_path,
     _utc_now,
     assert_crawlable_url,
@@ -89,9 +103,10 @@ from apps.worker.stages.crawler import (
 logger = logging.getLogger(__name__)
 
 FETCHED_VIA = "firecrawl"
-# The reason the report's "Failed internal pages" table prints for a page Firecrawl could not
-# fetch: plain, and about that one page.
+# The reasons the report's "Failed internal pages" table prints for a page Firecrawl could not
+# fetch, or that led to another website: plain, and about that one page.
 PAGE_FETCH_FAILED_REASON = "Could not load this page"
+OFF_SITE_PAGE_REASON = "Leads to another website"
 
 _SCRAPE_PATH = "/v1/scrape"
 # The request waits this much longer than Firecrawl's own timeout, so Firecrawl answers first.
@@ -102,17 +117,45 @@ _TOTAL_BUDGET_SECONDS = 300
 # Firecrawl answers after which every further page would fail the same way (a bad key, no
 # credits, a refused site, its rate limit): the remaining pages are skipped, not sent.
 _STOP_STATUSES = frozenset({401, 402, 403, 429})
+# Firecrawl answers an operator must see (a bad key, the credits used up): logged at WARNING.
+_WARN_STATUSES = frozenset({401, 402})
+# Outcomes that mean a cap or the counter stopped the fallback: logged at WARNING too.
+_WARN_OUTCOMES = frozenset({"daily_limit_reached", "monthly_limit_reached", "counter_unavailable"})
+
+# Size caps. A real page's rawHtml is about 1 MB (tchomesmn.com: 0.93 MB); parsing 5 MB already
+# takes the analysers close to a minute, so a bigger answer is refused, not read.
+_RESPONSE_MAX_BYTES = 8 * 1024 * 1024
+_RAW_HTML_MAX_CHARS = 5_000_000
 
 _SCREENSHOT_MAX_BYTES = 20 * 1024 * 1024
+# The whole screenshot download, not just one read (httpx's timeouts are per operation).
 _SCREENSHOT_TIMEOUT_SECONDS = 30
 _IMAGE_SIGNATURES: tuple[tuple[bytes, str], ...] = (
     (b"\x89PNG\r\n\x1a\n", ".png"),
     (b"\xff\xd8\xff", ".jpg"),
 )
 
-# One Redis counter per UTC day: INCR is atomic, so two audits never share the last slot.
-_DAILY_KEY_PREFIX = "firecrawl_fallback"
-_DAILY_KEY_TTL_SECONDS = 2 * 24 * 60 * 60
+# Redis counters: fallback audits per UTC day, pages per UTC month. Each expires on its own.
+_KEY_PREFIX = "firecrawl_fallback"
+_DAY_KEY_TTL_SECONDS = 2 * 24 * 60 * 60
+_MONTH_KEY_TTL_SECONDS = 40 * 24 * 60 * 60
+
+# Bot checks Firecrawl can only recognise by their markup (it reports no response headers):
+# strings that only the checks' own pages carry, all of a row required. Deliberately not the bare
+# /cdn-cgi/challenge-platform/ prefix (Cloudflare also loads .../scripts/jsd/main.js from it on
+# ordinary pages) nor a bare awswaf.com (pages that use AWS WAF's JavaScript integration load its
+# script too): only the challenge pages' own options objects and endpoints.
+_MARKUP_CHECKS: tuple[tuple[str, tuple[re.Pattern[str], ...]], ...] = (
+    (
+        "SiteGround anti-bot check",
+        (re.compile(r"""sgsubmit_url\s*=\s*["']/\.well-known/sgcaptcha/"""),),
+    ),
+    ("Cloudflare challenge", (re.compile(r"\b_cf_chl_opt\b"),)),
+    ("AWS WAF challenge", (re.compile(r"\bgokuProps\b"), re.compile(r"\.awswaf\.com/"))),
+    ("Vercel challenge", (re.compile(r"""["']/\.well-known/vercel/security/"""),)),
+)
+# SiteGround's and AWS WAF's checks answer 202; a real page answers 200.
+_CHALLENGE_STATUS = 202
 
 
 class FirecrawlError(Exception):
@@ -154,6 +197,8 @@ class _Stats:
     failed: int = 0
     skipped: int = 0
     detail: str = ""
+    # Set by a Firecrawl answer an operator must see (_WARN_STATUSES).
+    warn: bool = False
 
 
 def _api_key(settings: Settings) -> str:
@@ -162,8 +207,17 @@ def _api_key(settings: Settings) -> str:
 
 
 def is_enabled(settings: Settings) -> bool:
-    """True when the fallback may run: a Firecrawl key is set and the daily limit is not 0."""
-    return bool(_api_key(settings)) and settings.crawler_firecrawl_daily_limit > 0
+    """True when the fallback may run: a Firecrawl key is set and neither limit is 0."""
+    return (
+        bool(_api_key(settings))
+        and settings.crawler_firecrawl_daily_limit > 0
+        and settings.crawler_firecrawl_monthly_page_limit > 0
+    )
+
+
+def max_pages_per_audit(settings: Settings) -> int:
+    """Pages one fallback audit may fetch: never more than a browser crawl would open."""
+    return min(settings.crawler_max_pages, settings.crawler_firecrawl_max_pages)
 
 
 def scrape_request_body(url: str, settings: Settings) -> dict[str, Any]:
@@ -183,24 +237,66 @@ def scrape_request_body(url: str, settings: Settings) -> dict[str, Any]:
     }
 
 
+def _request_timeout_seconds(settings: Settings) -> float:
+    """How long one /v1/scrape exchange may take in all: Firecrawl's own timeout plus slack."""
+    return float(settings.crawler_firecrawl_timeout_seconds + _REQUEST_SLACK_SECONDS)
+
+
 def _redis_client(settings: Settings) -> Any:
     return redis.Redis.from_url(settings.redis_url, socket_connect_timeout=5, socket_timeout=5)
 
 
-def count_fallback_audit(settings: Settings, now: datetime | None = None) -> int:
-    """Count one more fallback audit for today (UTC) and return today's total. The dated key
-    expires after about two days, so no clean-up is needed."""
-    day = (now or datetime.now(UTC)).strftime("%Y-%m-%d")
-    key = f"{_DAILY_KEY_PREFIX}:{day}"
+@dataclass(frozen=True)
+class Allowance:
+    """A reservation against the caps: the month's page key (to give unused pages back), or the
+    cap that refused it (``refused``), in which case nothing stayed taken."""
+
+    month_key: str
+    pages: int
+    refused: str | None = None
+
+
+def reserve_allowance(settings: Settings, pages: int, now: datetime | None = None) -> Allowance:
+    """Take one fallback audit from today's allowance and ``pages`` pages from this month's, in
+    one MULTI/EXEC (INCR / INCRBY are atomic, so concurrent audits never share the last slot).
+    Over either cap, both are given back at once and the cap is named: a reservation is granted
+    only when the counts it leaves are within the caps, so the month's total never goes past
+    ``crawler_firecrawl_monthly_page_limit``."""
+    now = now or datetime.now(UTC)
+    day_key = f"{_KEY_PREFIX}:audits:{now:%Y-%m-%d}"
+    month_key = f"{_KEY_PREFIX}:pages:{now:%Y-%m}"
     client = _redis_client(settings)
     try:
         with client.pipeline(transaction=True) as pipe:
-            pipe.incr(key)
-            pipe.expire(key, _DAILY_KEY_TTL_SECONDS)
-            count, _expiry_set = pipe.execute()
+            pipe.incr(day_key)
+            pipe.expire(day_key, _DAY_KEY_TTL_SECONDS)
+            pipe.incrby(month_key, pages)
+            pipe.expire(month_key, _MONTH_KEY_TTL_SECONDS)
+            audits, _day_ttl_set, used, _month_ttl_set = pipe.execute()
+        refused = None
+        if int(audits) > settings.crawler_firecrawl_daily_limit:
+            refused = "daily_limit_reached"
+        elif int(used) > settings.crawler_firecrawl_monthly_page_limit:
+            refused = "monthly_limit_reached"
+        if refused is not None:
+            with client.pipeline(transaction=True) as pipe:
+                pipe.decr(day_key)
+                pipe.decrby(month_key, pages)
+                pipe.execute()
     finally:
         client.close()
-    return int(count)
+    return Allowance(month_key=month_key, pages=pages, refused=refused)
+
+
+def give_back_pages(settings: Settings, allowance: Allowance, pages: int) -> None:
+    """Return reserved pages that were never sent to Firecrawl to the month's allowance."""
+    if pages <= 0:
+        return
+    client = _redis_client(settings)
+    try:
+        client.decrby(allowance.month_key, pages)
+    finally:
+        client.close()
 
 
 def _is_public(url: str, cache: dict[str, bool]) -> bool:
@@ -263,6 +359,8 @@ def _read_page(url: str, payload: Any) -> _Fetched:
     html = data.get("rawHtml")
     if not isinstance(html, str) or not html.strip():
         raise FirecrawlError("answer carried no HTML")
+    if len(html) > _RAW_HTML_MAX_CHARS:
+        raise FirecrawlError("page HTML too large")
     metadata = data.get("metadata")
     metadata = metadata if isinstance(metadata, dict) else {}
     status = metadata.get("statusCode")
@@ -290,17 +388,42 @@ def _read_page(url: str, payload: Any) -> _Fetched:
     )
 
 
+async def _read_capped(response: httpx.Response, limit: int) -> bytes | None:
+    """The response body, or None once it is (declared or streamed) past ``limit`` bytes."""
+    declared = response.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > limit:
+        return None
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in response.aiter_bytes():
+        total += len(chunk)
+        if total > limit:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 async def _scrape(client: httpx.AsyncClient, url: str, settings: Settings) -> _Fetched:
+    body = scrape_request_body(url, settings)
     try:
-        response = await client.post(_SCRAPE_PATH, json=scrape_request_body(url, settings))
-    except httpx.TimeoutException:
+        # The whole exchange, not just one read: httpx's timeouts are per operation.
+        async with (
+            asyncio.timeout(_request_timeout_seconds(settings)),
+            client.stream("POST", _SCRAPE_PATH, json=body) as response,
+        ):
+            if response.status_code != 200:
+                raise FirecrawlError(
+                    f"HTTP {response.status_code}", status_code=response.status_code
+                )
+            content = await _read_capped(response, _RESPONSE_MAX_BYTES)
+    except (TimeoutError, httpx.TimeoutException):
         raise FirecrawlError("timed out") from None
     except httpx.HTTPError as exc:
         raise FirecrawlError(f"request failed ({type(exc).__name__})") from None
-    if response.status_code != 200:
-        raise FirecrawlError(f"HTTP {response.status_code}", status_code=response.status_code)
+    if content is None:
+        raise FirecrawlError("answer too large")
     try:
-        payload = response.json()
+        payload = json.loads(content)
     except ValueError:
         raise FirecrawlError("answer was not JSON") from None
     return _read_page(url, payload)
@@ -315,17 +438,28 @@ async def _try_scrape(
     except SoftTimeLimitExceeded:
         raise
     except FirecrawlError as exc:
+        if exc.status_code in _WARN_STATUSES:
+            stats.warn = True
         return exc
     except Exception as exc:
         return FirecrawlError(f"unexpected error ({type(exc).__name__})")
 
 
 def _bot_check(fetched: _Fetched) -> str | None:
-    """The bot check Firecrawl was shown instead of the page, by the crawler's own markers.
-    Firecrawl reports no response headers, so the address, status and title decide, plus a meta
-    refresh into a check's address."""
+    """The bot check Firecrawl was shown instead of the page. Firecrawl reports no response
+    headers, so the crawler's own markers decide from the address and title, then a meta refresh
+    into a check's address, a check's own markup (_MARKUP_CHECKS), and a 202."""
     found = interstitial_reason(fetched.final_url, fetched.status_code, None, fetched.title)
-    return found[0] if found is not None else fetched.refresh_check
+    if found is not None:
+        return found[0]
+    if fetched.refresh_check is not None:
+        return fetched.refresh_check
+    for label, patterns in _MARKUP_CHECKS:
+        if all(pattern.search(fetched.html) for pattern in patterns):
+            return label
+    if fetched.status_code == _CHALLENGE_STATUS:
+        return f"unnamed check (HTTP {_CHALLENGE_STATUS})"
+    return None
 
 
 def _image_suffix(data: bytes) -> str | None:
@@ -357,27 +491,24 @@ async def _download_image(url: str, settings: Settings) -> bytes:
         assert_crawlable_url(url, allow_private_hosts=False)
     except CrawlerError:
         raise _ScreenshotError("screenshot address is not a public host") from None
-    chunks: list[bytes] = []
-    total = 0
-    async with (
-        httpx.AsyncClient(
-            headers={"User-Agent": settings.crawler_user_agent},
-            timeout=_SCREENSHOT_TIMEOUT_SECONDS,
-            follow_redirects=False,
-        ) as client,
-        client.stream("GET", url) as response,
-    ):
-        if response.status_code != 200:
-            raise _ScreenshotError(f"screenshot download answered HTTP {response.status_code}")
-        declared = response.headers.get("content-length", "")
-        if declared.isdigit() and int(declared) > _SCREENSHOT_MAX_BYTES:
-            raise _ScreenshotError("screenshot is too large")
-        async for chunk in response.aiter_bytes():
-            total += len(chunk)
-            if total > _SCREENSHOT_MAX_BYTES:
-                raise _ScreenshotError("screenshot is too large")
-            chunks.append(chunk)
-    return b"".join(chunks)
+    try:
+        async with (
+            asyncio.timeout(_SCREENSHOT_TIMEOUT_SECONDS),
+            httpx.AsyncClient(
+                headers={"User-Agent": settings.crawler_user_agent},
+                timeout=_SCREENSHOT_TIMEOUT_SECONDS,
+                follow_redirects=False,
+            ) as client,
+            client.stream("GET", url) as response,
+        ):
+            if response.status_code != 200:
+                raise _ScreenshotError(f"screenshot download answered HTTP {response.status_code}")
+            data = await _read_capped(response, _SCREENSHOT_MAX_BYTES)
+    except (TimeoutError, httpx.TimeoutException):
+        raise _ScreenshotError("screenshot download timed out") from None
+    if data is None:
+        raise _ScreenshotError("screenshot is too large")
+    return data
 
 
 async def _store_screenshot(
@@ -442,9 +573,7 @@ def _api_client(settings: Settings) -> httpx.AsyncClient:
     return httpx.AsyncClient(
         base_url=settings.firecrawl_api_url,
         headers={"Authorization": f"Bearer {_api_key(settings)}"},
-        timeout=httpx.Timeout(
-            settings.crawler_firecrawl_timeout_seconds + _REQUEST_SLACK_SECONDS, connect=10.0
-        ),
+        timeout=httpx.Timeout(_request_timeout_seconds(settings), connect=10.0),
         follow_redirects=False,
     )
 
@@ -470,7 +599,8 @@ async def crawl_site_via_firecrawl(
     """Crawl the site through Firecrawl after its security blocked our browser on the homepage
     (``blocked``). Returns the CrawlResult the browser crawl would have, or raises ``blocked``
     itself (the visitor's original plain message) when the fallback cannot help. Logs one
-    ``firecrawl_fallback`` line per call."""
+    ``firecrawl_fallback`` line per call: WARNING when a cap stopped it or Firecrawl refused the
+    key or ran out of credits, INFO otherwise."""
     stats = _Stats(blocked_by=site_security_block(blocked) or "unknown")
     started = time.monotonic()
     try:
@@ -490,14 +620,16 @@ async def crawl_site_via_firecrawl(
         stats.outcome = "timed_out"
         raise
     except CrawlerError:
-        # ``blocked`` itself, an HTTP error or the redirect check: final, plain text already.
+        # ``blocked`` itself, or the redirect checks: final, plain text already.
         raise
     except Exception as exc:
         # Anything unexpected must not reach the visitor as raw text: the original message.
         stats.outcome, stats.detail = "error", type(exc).__name__
         raise blocked from None
     finally:
-        logger.info(
+        warn = stats.warn or stats.outcome in _WARN_OUTCOMES
+        logger.log(
+            logging.WARNING if warn else logging.INFO,
             "firecrawl_fallback audit_id=%s host=%s blocked_by=%r outcome=%s%s requests=%d "
             "pages=%d failed=%d skipped=%d seconds=%.1f",
             audit_id or "-",
@@ -529,22 +661,59 @@ async def _crawl(
         stats.outcome = "not_public"
         raise blocked
 
-    # Counted before the first request, so an audit that spends credits always counts.
+    max_pages = max_pages_per_audit(settings)
+    # Reserved before the first request: one audit from today's allowance and the full page cap
+    # from this month's. What is not sent is given back at the end.
     try:
-        today: int | None = count_fallback_audit(settings)
+        allowance: Allowance | None = reserve_allowance(settings, max_pages)
     except SoftTimeLimitExceeded:
         raise
     except Exception:
-        today = None
-    if today is None:
-        # Without the count the daily allowance cannot be kept, so there is no fallback.
+        allowance = None
+    if allowance is None:
+        # Without the counters the caps cannot be kept, so there is no fallback.
         stats.outcome = "counter_unavailable"
         raise blocked
-    if today > settings.crawler_firecrawl_daily_limit:
-        stats.outcome = "daily_limit_reached"
+    if allowance.refused is not None:
+        stats.outcome = allowance.refused
         raise blocked
 
-    max_pages = min(settings.crawler_max_pages, settings.crawler_firecrawl_max_pages)
+    try:
+        return await _fetch_pages(
+            url,
+            start_url=start_url,
+            robots=robots,
+            settings=settings,
+            audit_id=audit_id,
+            started_at=started_at,
+            blocked=blocked,
+            stats=stats,
+            max_pages=max_pages,
+            public_hosts=public_hosts,
+        )
+    finally:
+        try:
+            give_back_pages(settings, allowance, max_pages - stats.requests)
+        except SoftTimeLimitExceeded:
+            raise
+        except Exception:
+            # The unused pages stay counted: the month's cap errs on the safe side.
+            logger.warning("firecrawl_fallback could not give back unused pages")
+
+
+async def _fetch_pages(
+    url: str,
+    *,
+    start_url: str,
+    robots: RobotsPolicy,
+    settings: Settings,
+    audit_id: str | None,
+    started_at: str,
+    blocked: SiteBlockedError,
+    stats: _Stats,
+    max_pages: int,
+    public_hosts: dict[str, bool],
+) -> CrawlResult:
     deadline = time.monotonic() + _TOTAL_BUDGET_SECONDS
     failed_pages: list[dict[str, Any]] = []
     skipped_pages: list[dict[str, Any]] = []
@@ -554,13 +723,13 @@ async def _crawl(
         if isinstance(home, FirecrawlError):
             stats.outcome, stats.detail = "service_error", str(home)
             raise blocked
-        if _bot_check(home) is not None or home.status_code in {401, 403}:
-            # Firecrawl met the same wall. One attempt only: no stealth mode, no retry.
+        if _bot_check(home) is not None or home.status_code != 200:
+            # Firecrawl met the same wall, or the homepage answered it anything but a page
+            # (Firecrawl reports no headers, so a header-only check shows only as its status).
+            # One attempt only: no stealth mode, no retry.
             stats.outcome = "still_blocked"
+            stats.detail = f"HTTP {home.status_code}" if home.status_code != 200 else ""
             raise blocked
-        if is_failed_http_status(home.status_code):
-            stats.outcome = "http_error"
-            raise _http_error(home.status_code)
         if not is_same_site(start_url, home.final_url):
             stats.outcome = "left_site"
             raise CrawlerError("Homepage redirected outside the starting site.")
@@ -597,21 +766,11 @@ async def _crawl(
                 if fetched.status_code in _STOP_STATUSES:
                     stop_reason = "stopped_after_service_error"
                 continue
-            if _bot_check(fetched) is not None:
-                own_site = is_same_site(candidate.url, fetched.final_url)
-                reason = BOT_CHECK_PAGE_REASON if own_site else OTHER_SITE_BOT_CHECK_PAGE_REASON
+            reason, walled = _child_page_problem(candidate.url, fetched, public_hosts)
+            if reason is not None:
                 failed_pages.append(_failed(candidate.url, reason, homepage.final_url))
-                if own_site:
+                if walled:
                     stop_reason = "stopped_after_bot_check"
-                continue
-            if is_failed_http_status(fetched.status_code):
-                failed_pages.append(
-                    _failed(
-                        candidate.url,
-                        http_error_page_reason(fetched.status_code),
-                        homepage.final_url,
-                    )
-                )
                 continue
             pages.append(
                 await _page(
@@ -642,3 +801,24 @@ async def _crawl(
         fetched_via=FETCHED_VIA,
         browser_blocked_by=stats.blocked_by,
     )
+
+
+def _child_page_problem(
+    url: str, fetched: _Fetched, public_hosts: dict[str, bool]
+) -> tuple[str | None, bool]:
+    """Why an internal page Firecrawl fetched is not scored (None when it is), and whether it
+    walls the rest (the site's own check)."""
+    if _bot_check(fetched) is not None:
+        if is_same_site(url, fetched.final_url):
+            return BOT_CHECK_PAGE_REASON, True
+        return OTHER_SITE_BOT_CHECK_PAGE_REASON, False
+    if is_failed_http_status(fetched.status_code):
+        return http_error_page_reason(fetched.status_code), False
+    if fetched.status_code != 200:
+        return PAGE_FETCH_FAILED_REASON, False
+    # Another website's page (a redirect away) is never scored as the audited site's.
+    if not is_same_site(url, fetched.final_url):
+        return OFF_SITE_PAGE_REASON, False
+    if not _is_public(fetched.final_url, public_hosts):
+        return PAGE_FETCH_FAILED_REASON, False
+    return None, False

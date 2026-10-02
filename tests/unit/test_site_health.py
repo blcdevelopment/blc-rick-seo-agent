@@ -1179,3 +1179,124 @@ def test_a_sitemap_redirected_to_another_websites_check_walls_nothing() -> None:
             return await site_health._sitemap_urls(client, "http://site.example/", _settings(), {})
 
     assert asyncio.run(run()) == ([], "http_403")
+
+
+# --- Pages fetched through Firecrawl: the site blocks this server ---------------------------------
+
+
+def _refusing_site(sent: list[str]):
+    """A site that refuses this server outright: a plain 403 for every request, no marker."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(f"{request.method} {request.url.path}")
+        return httpx.Response(403, text="Forbidden", request=request)
+
+    return handler
+
+
+def _crawl_json(fetched_via: str | None) -> dict:
+    crawl = {
+        "final_url": "https://acme.example/",
+        "pages": [
+            {"url": "https://acme.example/", "final_url": "https://acme.example/"},
+            {"url": "https://acme.example/twin", "final_url": "https://acme.example/twin"},
+        ],
+        "discovered_links": [{"url": f"https://acme.example/page-{index}"} for index in range(6)],
+    }
+    if fetched_via:
+        crawl["fetched_via"] = fetched_via
+    return crawl
+
+
+def _with_transport(monkeypatch, handler) -> None:
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        site_health.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+
+
+def _seo_facts_for_acme() -> dict:
+    facts = _seo_facts_with_page_problems()
+    facts["pages"][0]["url"] = "https://acme.example/"
+    facts["pages"][1]["url"] = "https://acme.example/twin"
+    return facts
+
+
+def test_a_site_that_refuses_this_server_would_read_as_all_broken_without_the_flag(
+    monkeypatch,
+) -> None:
+    # Why the flag exists: a plain 403 carries no bot-check marker, so the sweep scores every
+    # URL as a broken page and calls the result complete.
+    sent: list[str] = []
+    _with_transport(monkeypatch, _refusing_site(sent))
+    facts = collect_site_health_facts(
+        url="https://acme.example/",
+        seo_facts=_seo_facts_for_acme(),
+        crawled_pages=_crawl_json(None),
+        rendered_pages=None,
+        settings=_settings(),
+    )
+    assert facts["status"] == "complete"
+    assert facts["summary"]["client_error_internal_urls"] == 6
+    assert facts["checks"]["sitemap_status"] == "http_403"
+
+
+@pytest.mark.parametrize("rendered", [True, False])
+def test_pages_fetched_through_firecrawl_send_nothing_from_this_server(
+    monkeypatch, rendered
+) -> None:
+    # rendered=False is the enrichment rerun: only the stored crawl JSON is there.
+    sent: list[str] = []
+    _with_transport(monkeypatch, _refusing_site(sent))
+    rendered_pages = None
+    if rendered:
+        rendered_pages = [
+            SimpleNamespace(
+                url="https://acme.example/",
+                final_url="https://acme.example/",
+                html='<a href="/contact">Contact</a><a href="https://other.example/">x</a>',
+            )
+        ]
+    facts = collect_site_health_facts(
+        url="https://acme.example/",
+        seo_facts=_seo_facts_for_acme(),
+        crawled_pages=_crawl_json("firecrawl"),
+        rendered_pages=rendered_pages,
+        settings=_settings(site_health_check_external_links=True),
+    )
+
+    assert sent == []  # no sitemap, no link request
+    assert facts["status"] == "partial"
+    assert facts["reason"] == "bot_blocked"
+    assert facts["checks"]["sitemap_status"] == "not_requested_site_blocks_server"
+    assert facts["summary"]["internal_urls_checked"] == 0
+    assert facts["summary"].get("client_error_internal_urls", 0) == 0
+    assert facts["checks"]["skipped_breaker"] == (8 if rendered else 6)
+    # The on-page checks over the fetched pages still run.
+    assert facts["summary"]["duplicate_titles"] == 2
+    assert facts["summary"]["missing_h1"] == 2
+    assert any(
+        note.startswith("The site's security blocks our server, so its pages were fetched")
+        and note.endswith("Link results are incomplete and are not scored.")
+        for note in facts["notes"]
+    )
+
+
+def test_external_seo_rerun_keeps_a_firecrawl_crawl_unswept_and_unscored(monkeypatch) -> None:
+    sent: list[str] = []
+    _with_transport(monkeypatch, _refusing_site(sent))
+    facts = collect_external_seo_facts(
+        url="https://acme.example/",
+        audit_id="audit-1",
+        page_urls=["https://acme.example/"],
+        settings=_settings(google_oauth_client_id="", google_oauth_client_secret=None),
+        db=None,
+        seo_facts=_seo_facts_for_acme(),
+        crawled_pages=_crawl_json("firecrawl"),
+        rendered_pages=None,
+    )
+    assert sent == []
+    assert facts["sources"]["technical_crawl"] == "partial"
+    assert facts["technical_crawl"]["reason"] == "bot_blocked"

@@ -37,7 +37,8 @@ class SiteBlockedError(CrawlerError):
     for an internal page that failed inside an audit that went on, and the report prints it in its
     "Failed internal pages" table. ``bot_check`` names the audited site's own bot check when that
     is what blocked the page (None for an HTTP error, or for another website's check).
-    ``status_code`` is the HTTP error status that failed the page (None for a bot check)."""
+    ``status_code`` is the HTTP error status the audited site itself answered (None for a bot
+    check, and for an error answered by another website a redirect led to)."""
 
     def __init__(
         self,
@@ -95,11 +96,14 @@ def http_error_page_reason(status_code: int) -> str:
     return f"The site returned an error (HTTP {status_code})"
 
 
-def _http_error(status_code: int) -> SiteBlockedError:
+def _http_error(status_code: int, *, own_site: bool = True) -> SiteBlockedError:
+    """A page that answered with an HTTP error. ``own_site`` is False when a redirect led to
+    another website that answered it: the visitor's text is the same, but no ``status_code`` is
+    recorded, so another website's 401/403 never reads as the audited site's refusal."""
     return SiteBlockedError(
         http_error_message(status_code),
         page_reason=http_error_page_reason(status_code),
-        status_code=status_code,
+        status_code=status_code if own_site else None,
     )
 
 
@@ -908,7 +912,7 @@ async def _render_page(
 
         status_code = response.status if response else None
         if is_failed_http_status(status_code):
-            raise _http_error(status_code)
+            raise _http_error(status_code, own_site=not _on_another_site(url, page, response))
 
         html = await page.content()
         title = await page.title()
