@@ -6,6 +6,10 @@ from urllib.parse import urlparse
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+# Shown when social_audits_enabled is off: the API's 422 for a request that carries social
+# handles, and the error of a social-only job that was queued before the switch.
+SOCIAL_AUDITS_DISABLED_MESSAGE = "Social media audits are not available here."
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
@@ -167,6 +171,18 @@ class Settings(BaseSettings):
     gsc_opportunity_aio_prevalence: float = Field(default=0.40, ge=0, le=1)
     gsc_opportunity_cap_multiple: float = Field(default=3.0, ge=1)
     url_inspection_max_urls: int = Field(default=20, ge=0, le=200)
+
+    # Social media audits: the standalone social audit, a combined audit's Social Media Audit
+    # section and the Overall Lead-Gen Readiness score built on it. False (the Rick edition) turns
+    # all of it off. The API refuses a create request that carries social handles (422). The
+    # worker never looks for social links and never collects social data for any job, a job
+    # queued before the switch included: no social call to Apify, YouTube, Google Places or
+    # OpenAI, no social section, no social score, so the report's headline is the website's Lead
+    # Generation Readiness. A social-only job queued before the switch fails with a plain
+    # message. Audits completed before the switch keep what they already have. While it is off,
+    # the social settings below (Apify, YouTube, Places, auto-discovery) have no effect on an
+    # audit. The frontend's matching build flag is NEXT_PUBLIC_SOCIAL_AUDITS_ENABLED.
+    social_audits_enabled: bool = True
 
     # Social data provider (Apify) — powers the standalone social audit (free-tier credits)
     # via the Instagram + Facebook actors. Empty token => the social collector skips, like

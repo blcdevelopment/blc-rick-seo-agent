@@ -46,7 +46,7 @@ pipeline's scoring and report sections are byte-for-byte unchanged by it.
 
 ### 1.1 Rick edition switches
 
-This repo is the Rick edition of `blc-social-audit`: the same pipeline and scores, plus three
+This repo is the Rick edition of `blc-social-audit`: the same pipeline and scores, plus four
 settings (all in `apps/shared/config.py`; code defaults reproduce the parent app):
 
 | Setting | Code default | This edition | Effect |
@@ -54,6 +54,7 @@ settings (all in `apps/shared/config.py`; code defaults reproduce the parent app
 | `REPORT_PROFILE` | `full` | `teaser` | `teaser` strips every fix from every report surface and adds a booking call-to-action (`BOOKING_URL`, `BOOKING_CTA_LABEL`); see §5 |
 | `PUBLIC_AUDITS_ENABLED` (+ `NEXT_PUBLIC_PUBLIC_AUDITS_ENABLED` for the UI build) | `false` | `true` | Visitors create and read audits without signing in; operator endpoints stay gated; see §5 and §7 |
 | `SEARCH_CONSOLE_ENABLED` | `true` | `false` | No Google calls, no `/google/search-console` routes, no Search Console blocks in any report |
+| `SOCIAL_AUDITS_ENABLED` (+ `NEXT_PUBLIC_SOCIAL_AUDITS_ENABLED` for the UI build) | `true` | `false` | No social part in any audit: the form has no social fields, `POST /audits` answers 422 to social handles, and the worker skips social discovery and collection for every job (`_run_social_pipeline` fails a queued social-only job; `_augment_with_social` never runs), so reports have no social section and no social or overall score. Audits completed before the switch keep theirs |
 
 ---
 
@@ -117,7 +118,8 @@ queued → crawling → collecting_performance → extracting → scoring
 80  scoring
 88  commenting
 95  validating
-96  rendering  "Auditing social profiles"      (only when social handles resolve — see below)
+96  rendering  "Auditing social profiles"      (only when social handles resolve — see below;
+                                               never while SOCIAL_AUDITS_ENABLED=false)
 97  rendering  "Collecting AI visibility"      (only when AI_VISIBILITY_ENABLED=true)
 98  rendering
 100 complete   (or → failed)
@@ -425,7 +427,7 @@ Highlights:
 - `test_external_seo`-family: `test_site_health.py`, `test_screaming_frog.py`, `test_google_search_console.py` — technical-crawl sweep, Screaming Frog adapter, GSC facts.
 - `test_report_payload.py`, `test_pdf_renderer.py`, `test_docx_renderer.py` — report composition, pagination edges, DOCX rendering.
 - `test_audit_api.py`, `test_audit_lifecycle.py`, `test_worker_collection.py`, `test_time_budget.py`, `test_qa_harness.py` — API + persistence + full worker artifacts + harness.
-- Rick edition: `test_report_profile.py` (leak tests built from the source of every fix — rubric remediation, action titles, technical fixes, summary advice — across the payload, PDF, DOCX, API detail and share-link JSON), `test_public_audits.py` (visitor vs operator access, the production 403, no white-label), `test_search_console_toggle.py`, and `test_env_template.py` (every setting documented).
+- Rick edition: `test_report_profile.py` (leak tests built from the source of every fix — rubric remediation, action titles, technical fixes, summary advice — across the payload, PDF, DOCX, API detail and share-link JSON), `test_public_audits.py` (visitor vs operator access, the production 403, no white-label), `test_search_console_toggle.py`, `test_social_toggle.py` (the 422, no social call or section for any job while off, old audits kept, the production pin), and `test_env_template.py` (every setting documented).
 - Social + combined: the `test_social_*.py` / `test_extractor_social.py` / `test_worker_social.py` suite (extractor, scoring, worker branch, providers/registry, typed schema) plus the combined flow (`_augment_with_social`, Overall Lead-Gen Readiness, appended report sections), and `test_audit_states.py` — a tripwire that keeps the `audit_jobs.status` CHECK constraint, the model, and `JOB_STATUS_VALUES` in sync.
 
 The hermetic QA harness (`scripts/qa_common.py`, `scripts/qa_e2e.py`,

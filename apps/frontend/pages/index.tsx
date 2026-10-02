@@ -10,6 +10,12 @@ import { ApiError, BrandOverrides, createAudit } from "../lib/api";
 // the backend still silently ignores a malformed colour, so this only improves UX.
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
 
+// Social media audits: a build-time flag (NEXT_PUBLIC_* values are inlined), the counterpart of
+// the API's SOCIAL_AUDITS_ENABLED. Unset keeps the parent's form. "false" (the Rick edition)
+// removes the social fields and their mention, and the request never carries social_handles
+// (the API would refuse it with a 422).
+const SOCIAL_AUDITS = process.env.NEXT_PUBLIC_SOCIAL_AUDITS_ENABLED !== "false";
+
 function normalizeUrl(raw: string): string {
   const trimmed = raw.trim();
   if (!trimmed) return trimmed;
@@ -107,13 +113,16 @@ export default function SubmitAuditPage() {
     setSubmitting(true);
 
     const handles: Record<string, string> = {};
-    const ig = extractHandle(instagram);
-    const fb = extractHandle(facebook);
-    const yt = extractHandle(youtube);
-    if (ig) handles.instagram = ig;
-    if (fb) handles.facebook = fb;
-    if (yt) handles.youtube = yt;
-    const hasSocial = Object.keys(handles).length > 0;
+    if (SOCIAL_AUDITS) {
+      const ig = extractHandle(instagram);
+      const fb = extractHandle(facebook);
+      const yt = extractHandle(youtube);
+      if (ig) handles.instagram = ig;
+      if (fb) handles.facebook = fb;
+      if (yt) handles.youtube = yt;
+    }
+    // Always false with social audits off: a plain website audit, with no social_handles key.
+    const hasSocial = SOCIAL_AUDITS && Object.keys(handles).length > 0;
 
     try {
       const token = await getToken();
@@ -146,11 +155,18 @@ export default function SubmitAuditPage() {
       <div className="page-narrow">
         <p className="eyebrow">New Website Audit</p>
         <h1>Submit a website for auditing</h1>
-        <p className="lede">
-          Enter a website URL to run the full SEO, UX/UI, and lead generation readiness audit. Add
-          social links below to also audit social media and get one combined report with an overall
-          readiness score. Niche and target audience are optional.
-        </p>
+        {SOCIAL_AUDITS ? (
+          <p className="lede">
+            Enter a website URL to run the full SEO, UX/UI, and lead generation readiness audit.
+            Add social links below to also audit social media and get one combined report with an
+            overall readiness score. Niche and target audience are optional.
+          </p>
+        ) : (
+          <p className="lede">
+            Enter a website URL to run the full SEO, UX/UI, and lead generation readiness audit.
+            Niche and target audience are optional.
+          </p>
+        )}
 
         {/* Connecting a Google account is an operator action; an anonymous visitor's
             connection would expose their Search Console data to anyone auditing that site. */}
@@ -225,55 +241,58 @@ export default function SubmitAuditPage() {
             </p>
           </div>
 
-          <details className="brand-panel">
-            <summary>Social media (optional — auto-detected from the site if left blank)</summary>
-            <p className="muted">
-              Paste profile links or @handles to audit specific accounts. Leave any blank and we
-              auto-detect that platform&apos;s link from the website itself (the footer/header
-              icons). When any profile is provided or found, the social audit runs after the website
-              audit and produces one combined report with a social section and an overall lead-gen
-              readiness score.
-            </p>
+          {/* No social section at all when social audits are switched off (SOCIAL_AUDITS). */}
+          {SOCIAL_AUDITS && (
+            <details className="brand-panel">
+              <summary>Social media (optional — auto-detected from the site if left blank)</summary>
+              <p className="muted">
+                Paste profile links or @handles to audit specific accounts. Leave any blank and we
+                auto-detect that platform&apos;s link from the website itself (the footer/header
+                icons). When any profile is provided or found, the social audit runs after the
+                website audit and produces one combined report with a social section and an overall
+                lead-gen readiness score.
+              </p>
 
-            <div className="field">
-              <label htmlFor="instagram">Instagram</label>
-              <input
-                id="instagram"
-                name="instagram"
-                type="text"
-                placeholder="@acmebuilders or instagram.com/acmebuilders"
-                value={instagram}
-                onChange={(event) => setInstagram(event.target.value)}
-                disabled={submitting}
-              />
-            </div>
+              <div className="field">
+                <label htmlFor="instagram">Instagram</label>
+                <input
+                  id="instagram"
+                  name="instagram"
+                  type="text"
+                  placeholder="@acmebuilders or instagram.com/acmebuilders"
+                  value={instagram}
+                  onChange={(event) => setInstagram(event.target.value)}
+                  disabled={submitting}
+                />
+              </div>
 
-            <div className="field">
-              <label htmlFor="facebook">Facebook</label>
-              <input
-                id="facebook"
-                name="facebook"
-                type="text"
-                placeholder="facebook.com/acmebuilders"
-                value={facebook}
-                onChange={(event) => setFacebook(event.target.value)}
-                disabled={submitting}
-              />
-            </div>
+              <div className="field">
+                <label htmlFor="facebook">Facebook</label>
+                <input
+                  id="facebook"
+                  name="facebook"
+                  type="text"
+                  placeholder="facebook.com/acmebuilders"
+                  value={facebook}
+                  onChange={(event) => setFacebook(event.target.value)}
+                  disabled={submitting}
+                />
+              </div>
 
-            <div className="field">
-              <label htmlFor="youtube">YouTube</label>
-              <input
-                id="youtube"
-                name="youtube"
-                type="text"
-                placeholder="youtube.com/@acmebuilders"
-                value={youtube}
-                onChange={(event) => setYoutube(event.target.value)}
-                disabled={submitting}
-              />
-            </div>
-          </details>
+              <div className="field">
+                <label htmlFor="youtube">YouTube</label>
+                <input
+                  id="youtube"
+                  name="youtube"
+                  type="text"
+                  placeholder="youtube.com/@acmebuilders"
+                  value={youtube}
+                  onChange={(event) => setYoutube(event.target.value)}
+                  disabled={submitting}
+                />
+              </div>
+            </details>
+          )}
 
           {/* White-label branding is operator-only; the public API ignores it. */}
           {!PUBLIC_AUDITS && (

@@ -238,7 +238,9 @@ def test_create_audit_persists_brand_overrides(monkeypatch) -> None:
     monkeypatch.setattr(
         audit_routes,
         "get_settings",
-        lambda: SimpleNamespace(audit_enqueue_enabled=False, public_audits_enabled=False),
+        lambda: SimpleNamespace(
+            audit_enqueue_enabled=False, public_audits_enabled=False, social_audits_enabled=True
+        ),
     )
     app.dependency_overrides[get_db_session] = override_db
     try:

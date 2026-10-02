@@ -23,7 +23,7 @@ from apps.api.schemas.audits import (
     AuditStatusResponse,
 )
 from apps.shared.audit_states import AuditStatus
-from apps.shared.config import get_settings
+from apps.shared.config import SOCIAL_AUDITS_DISABLED_MESSAGE, get_settings
 from apps.shared.models import AuditJob
 from apps.worker.stages.docx_renderer import render_audit_docx
 from apps.worker.stages.report_payload import compose_report_payload
@@ -174,6 +174,17 @@ def create_audit(
     db: DbSession,
 ) -> AuditCreateResponse:
     settings = get_settings()
+    # Social media audits switched off (SOCIAL_AUDITS_ENABLED=false, the Rick edition): only a
+    # plain website audit is accepted, so a request carrying any social handle is refused rather
+    # than silently audited without it. Checked first: the public-mode message below tells the
+    # visitor that social links are optional.
+    if not settings.social_audits_enabled and (
+        payload.audit_type != "website" or any((payload.social_handles or {}).values())
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=SOCIAL_AUDITS_DISABLED_MESSAGE,
+        )
     # A public visitor audits a website (social links ride along as a combined audit). A
     # standalone social audit is not offered by the UI and would spend Apify and OpenAI credit
     # on anonymous input, so public mode refuses it.

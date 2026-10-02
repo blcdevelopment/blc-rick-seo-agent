@@ -68,6 +68,8 @@ The code defaults reproduce the parent app; `.env.template` sets this edition's 
 | `PUBLIC_AUDITS_ENABLED` | `false` | `true` | Visitors create and read audits without signing in; operator endpoints keep the Clerk check, answer 403 without Clerk on any `APP_ENV` other than local/dev/test, and social-only audits are refused |
 | `NEXT_PUBLIC_PUBLIC_AUDITS_ENABLED` | unset | `true` | The UI's copy of the flag, baked at build time — put it in `apps/frontend/.env.local` (or pass it as a Docker build arg). With it the UI renders without Clerk |
 | `SEARCH_CONSOLE_ENABLED` | `true` | `false` | `false`: no Google calls, no `/google/search-console` routes, no Search Console blocks in any report. Its scored rules skip and the score rescales |
+| `SOCIAL_AUDITS_ENABLED` | `true` | `false` | `false`: no social media in the audit. `POST /audits` answers 422 ("Social media audits are not available here.") to a request with social handles, and the worker never discovers social links or calls a social provider for any job, so reports have no social section and no social or overall score. **The API and the worker must use the same value** |
+| `NEXT_PUBLIC_SOCIAL_AUDITS_ENABLED` | unset (= on) | `false` | The UI's copy, baked at build time like `NEXT_PUBLIC_PUBLIC_AUDITS_ENABLED`; `false` removes the social fields from the form |
 
 ### Optional integrations
 
@@ -82,7 +84,7 @@ or aborts an audit.
 | Site-health sweep | `SITE_HEALTH_*` | On by default, no extra deps — the default technical crawl |
 | Screaming Frog | `SCREAMING_FROG_*` | Off by default; when on it is preferred, with the sweep as fallback |
 | Search Console | `SEARCH_CONSOLE_ENABLED`, `GOOGLE_OAUTH_*`, `GSC_*`, `URL_INSPECTION_MAX_URLS` | Off in this edition (`SEARCH_CONSOLE_ENABLED=false`). That also removes the Google connect flow, so `YOUTUBE_ANALYTICS_CONNECT_ENABLED` has nothing to attach to |
-| Social providers | `APIFY_API_TOKEN`, `YOUTUBE_API_KEY`, `GOOGLE_PLACES_API_KEY` | That platform is skipped; a website audit is never promoted to combined |
+| Social providers | `APIFY_API_TOKEN`, `YOUTUBE_API_KEY`, `GOOGLE_PLACES_API_KEY` | That platform is skipped; a website audit is never promoted to combined. Unused in this edition (`SOCIAL_AUDITS_ENABLED=false`) |
 | OpenAI | `OPENAI_API_KEY`, `OPENAI_MODEL` | Standalone-social prose falls back to its deterministic baseline and AI Visibility can't run. **Website commentary never calls an LLM either way** |
 | AI Visibility | `AI_VISIBILITY_ENABLED`, `SEMRUSH_*` | Section omitted. When `true` it **auto-runs on every website/combined audit** and needs a saved Semrush session — see [OPERATIONS.md](OPERATIONS.md) |
 | Sentry | `SENTRY_DSN`, `SENTRY_TRACES_SAMPLE_RATE` | No-op |
@@ -104,9 +106,9 @@ make run-frontend  # :3000
 
 The UI calls `http://localhost:8000` unless `NEXT_PUBLIC_API_BASE_URL` says otherwise, and the API's
 `API_CORS_ORIGINS` must include the UI origin. Next.js reads env from `apps/frontend/.env.local`,
-**not** the repo-root `.env`: put `NEXT_PUBLIC_API_BASE_URL` and
-`NEXT_PUBLIC_PUBLIC_AUDITS_ENABLED=true` there. Without the public flag the UI is Clerk-gated and
-needs the Clerk publishable key to boot.
+**not** the repo-root `.env`: put `NEXT_PUBLIC_API_BASE_URL`,
+`NEXT_PUBLIC_PUBLIC_AUDITS_ENABLED=true` and `NEXT_PUBLIC_SOCIAL_AUDITS_ENABLED=false` there.
+Without the public flag the UI is Clerk-gated and needs the Clerk publishable key to boot.
 
 **Running next to the parent app on one machine.** The compose project is `blc-rick-seo-agent`, so
 containers and volumes never mix with the parent's. Host ports still collide: give this edition its

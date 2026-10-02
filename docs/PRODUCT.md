@@ -9,13 +9,14 @@ For how it works internally see [ARCHITECTURE.md](ARCHITECTURE.md); for how to u
 ## 1. What this is
 
 The Rick edition of Builder Lead Converter's website audit: a public site where a business owner
-pastes their website URL (optionally with Instagram / Facebook / YouTube links) and, without signing
-in, gets a branded **teaser** report. The system crawls the site, measures it, scores it against
-versioned YAML rubrics and renders a PDF (plus DOCX) — showing the problems and scores but none of
-the fixes, with a booking call-to-action ("Book a meeting with Rick") in their place. It is the
-parent tool (`blcdevelopment/blc-social-audit`) with three settings changed: `REPORT_PROFILE=teaser`,
-`PUBLIC_AUDITS_ENABLED=true` and `SEARCH_CONSOLE_ENABLED=false`; the code defaults reproduce the
-parent, where an internal operator gets the full report.
+pastes their website URL and, without signing in, gets a branded **teaser** report. The system
+crawls the site, measures it, scores it against versioned YAML rubrics and renders a PDF (plus
+DOCX) — showing the problems and scores but none of the fixes, with a booking call-to-action
+("Book a meeting with Rick") in their place. It is the parent tool
+(`blcdevelopment/blc-social-audit`) with four settings changed: `REPORT_PROFILE=teaser`,
+`PUBLIC_AUDITS_ENABLED=true`, `SEARCH_CONSOLE_ENABLED=false` and `SOCIAL_AUDITS_ENABLED=false` (no
+social media in the audit); the code defaults reproduce the parent, where an internal operator gets
+the full report.
 
 - **Audience of the report:** home builders, remodelers and local service businesses — the wording
   in `prompts/` and the rubric remediation text assumes that reader.
@@ -37,6 +38,10 @@ A job is exactly one type, but a `website` job **can be promoted to `combined` m
 crawled site links to its own social profiles and a provider credential is configured, the social
 step runs, and promotion happens only when the collection actually returns usable data
 (`SOCIAL_AUTODISCOVERY_ENABLED`, default on).
+
+**In this edition only `website` audits run** (`SOCIAL_AUDITS_ENABLED=false`): the API refuses a
+`combined` or `social` request (422), and a website job is never promoted. Those two types are the
+parent's, kept in the code and switched off; audits completed before the switch keep theirs.
 
 **Scoring shape:** Lead-Gen Readiness = 0.45 × SEO + 0.55 × UX/UI (`rubrics/composite.yaml`).
 Overall Readiness = 0.70 × Lead-Gen + 0.30 × Social (`rubrics/overall.yaml`), and rescales to the

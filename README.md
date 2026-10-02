@@ -1,9 +1,9 @@
 # BLC Website Audit Automation — Rick edition
 
-A public audit site for **Builder Lead Converter**. A visitor submits their website URL (optionally
-with Instagram / Facebook / YouTube links) without signing in; the site crawls it, measures it,
-scores it against versioned YAML rubrics, and renders a branded **teaser** report (web page, PDF and
-DOCX): the problems and scores, none of the fixes, and a "Book a meeting with Rick" call-to-action.
+A public audit site for **Builder Lead Converter**. A visitor submits their website URL without
+signing in; the site crawls it, measures it, scores it against versioned YAML rubrics, and renders a
+branded **teaser** report (web page, PDF and DOCX): the problems and scores, none of the fixes, and
+a "Book a meeting with Rick" call-to-action. Social media is not part of this edition's audit.
 
 **Status:** live at **https://seo.builderleadconverter.com** since 2026-09-29, on the parent's
 shared box; how it runs and deploys is in [DEPLOYMENT.md](DEPLOYMENT.md). This repo is a separate copy of
@@ -12,7 +12,7 @@ its database, domain or compose project.
 
 ## Rick edition
 
-The same pipeline and scoring engine as the parent; three settings (code defaults reproduce the
+The same pipeline and scoring engine as the parent; four settings (code defaults reproduce the
 parent, `.env.template` sets this edition's values):
 
 - **`REPORT_PROFILE=teaser`** keeps the findings (severity, what it means, why it matters, where it
@@ -31,6 +31,14 @@ parent, `.env.template` sets this edition's values):
 - **`SEARCH_CONSOLE_ENABLED=false`**: no Google calls, no OAuth routes, no Search Console blocks in
   any report. Its three scored checks are skipped, exactly as for a parent audit without a connected
   Google account.
+- **`SOCIAL_AUDITS_ENABLED=false`** (API and worker) plus **`NEXT_PUBLIC_SOCIAL_AUDITS_ENABLED=false`**
+  (UI build flag): no social media in the audit. The form has no social fields, the API answers 422
+  ("Social media audits are not available here.") to a request that carries social handles, and the
+  worker never looks for the site's social links or calls Apify, YouTube, Google Places or OpenAI
+  for social, for any job. Reports have no Social Media Audit section and no social or Overall
+  Lead-Gen Readiness score; the headline is the website's Lead Generation Readiness. A social-only
+  job queued before the switch fails with the same message; audits completed before it keep what
+  they have. The social code stays in place (parity with the parent), switched off.
 
 **AI Visibility** (`AI_VISIBILITY_ENABLED=true`, plus Semrush credentials and `OPENAI_API_KEY`)
 replays a saved Semrush session (`storage/semrush_session.json`), exactly like the parent. A person
@@ -39,8 +47,9 @@ live sign-in per account, so signing in here signs out the parent's bot. Without
 the teaser simply leaves the section out.
 
 The scores are deterministic: rules over extracted facts, never a language model. An LLM only
-rewrites prose on standalone social audits (never shown in the teaser) and reads the Semrush
-dashboard for the AI Visibility section — it can never add, drop or invent a finding.
+rewrites prose on standalone social audits (never shown in the teaser, and switched off here) and
+reads the Semrush dashboard for the AI Visibility section — it can never add, drop or invent a
+finding.
 
 ## Documentation
 
@@ -62,7 +71,7 @@ conda env create -f environment.yml && conda activate social-audit   # native li
 make install        # poetry install --with dev
 make browsers       # Playwright Chromium
 cp .env.template .env                     # this edition's ports: Postgres :5434, Redis :6381
-printf 'NEXT_PUBLIC_API_BASE_URL=http://localhost:8000\nNEXT_PUBLIC_PUBLIC_AUDITS_ENABLED=true\n' > apps/frontend/.env.local
+printf 'NEXT_PUBLIC_API_BASE_URL=http://localhost:8000\nNEXT_PUBLIC_PUBLIC_AUDITS_ENABLED=true\nNEXT_PUBLIC_SOCIAL_AUDITS_ENABLED=false\n' > apps/frontend/.env.local
 
 docker compose up -d postgres redis   # compose project blc-rick-seo-agent
 make migrate

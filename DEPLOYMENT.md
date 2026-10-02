@@ -273,13 +273,18 @@ docker inspect --format '{{.Name}} restarts={{.RestartCount}} oom={{.State.OOMKi
 
 - The public website audit, Rick edition, at **https://seo.builderleadconverter.com**. Live since
   2026-09-29 15:42 UTC.
-- A separate copy of `blc-social-audit` (the ai app) with three switches changed:
-  `REPORT_PROFILE=teaser`, `PUBLIC_AUDITS_ENABLED=true` and `SEARCH_CONSOLE_ENABLED=false`.
+- A separate copy of `blc-social-audit` (the ai app) with four switches changed:
+  `REPORT_PROFILE=teaser`, `PUBLIC_AUDITS_ENABLED=true`, `SEARCH_CONSOLE_ENABLED=false` and
+  `SOCIAL_AUDITS_ENABLED=false`.
   - Anyone can run an audit without signing in.
   - The report (web page, PDF, DOCX) shows the problems and scores, never the fixes, and a
     "Book a meeting with Rick" link.
+  - No social media: the form has no social fields, the audit never looks at the site's social
+    profiles, and the report has no social section or social score. Audits finished before the
+    switch keep what they have.
 - With the other apps it shares only the server, the ai app's Caddy, the `blc-edge` network, the
-  deploy lock and two Google API keys. Its database, Redis, volumes and compose project are its own.
+  deploy lock and the ai app's Google PageSpeed key (its YouTube key was copied too, and is unused
+  while social audits are off). Its database, Redis, volumes and compose project are its own.
 - This repository is public. Secrets live only in the box's `.env`.
 
 ### 2.2 Where and how it runs
@@ -317,7 +322,8 @@ docker inspect --format '{{.Name}} restarts={{.RestartCount}} oom={{.State.OOMKi
   - set: `POSTGRES_DB=blc_rick_seo_agent`, `POSTGRES_USER=blc`, `POSTGRES_PASSWORD` (its own random
     value), `BOOKING_URL`, `BOOKING_CTA_LABEL`, `GOOGLE_PSI_API_KEY` and `YOUTUBE_API_KEY` (the ai
     app's keys, copied from `~/blc-social-audit/.env`), `AI_VISIBILITY_ENABLED=false`,
-    `STORAGE_RETENTION_DAYS=90`;
+    `STORAGE_RETENTION_DAYS=90`. `YOUTUBE_API_KEY` is unused while social audits are off and can
+    be emptied;
   - empty: `OPENAI_API_KEY`, `APIFY_API_TOKEN`, `GOOGLE_PLACES_API_KEY`, `CLERK_ISSUER`,
     `CLERK_AUTHORIZED_PARTIES`, `CLERK_ALLOWED_SUBJECTS`, `SENTRY_DSN`, `ALERT_WEBHOOK_URL`; no
     Semrush values;
@@ -334,13 +340,13 @@ docker inspect --format '{{.Name}} restarts={{.RestartCount}} oom={{.State.OOMKi
   - api and worker: `APP_ENV=production`; `DATABASE_URL`, built from the `POSTGRES_*` values with
     host `postgres`; `REDIS_URL`, `CELERY_BROKER_URL` and `CELERY_RESULT_BACKEND`
     (`redis://redis:6379/0`); `LOCAL_REPORT_STORAGE_DIR` and `LOCAL_SCREENSHOT_STORAGE_DIR`; and the
-    three switches in 2.1;
+    four switches in 2.1;
   - api only: `AUDIT_ENQUEUE_ENABLED=true` and
     `API_CORS_ORIGINS=https://seo.builderleadconverter.com`;
   - worker only: `CRAWLER_CONCURRENCY=1` and `PLAYWRIGHT_BROWSERS_PATH`.
 - **Baked into the frontend image at build time:**
-  `NEXT_PUBLIC_API_BASE_URL=https://seo.builderleadconverter.com/api`, `NEXT_PUBLIC_APP_NAME` and
-  `NEXT_PUBLIC_PUBLIC_AUDITS_ENABLED=true`.
+  `NEXT_PUBLIC_API_BASE_URL=https://seo.builderleadconverter.com/api`, `NEXT_PUBLIC_APP_NAME`,
+  `NEXT_PUBLIC_PUBLIC_AUDITS_ENABLED=true` and `NEXT_PUBLIC_SOCIAL_AUDITS_ENABLED=false`.
 - **Changing a value:** [docs/OPERATIONS.md](docs/OPERATIONS.md) §2 says which changes need a
   recreate and which a rebuild. A key or the booking link needs only a recreate:
 
@@ -472,16 +478,19 @@ docker compose -p blc-rick-seo-agent -f docker-compose.prod.yml start api worker
 3. **`BOOKING_URL` must start with `https://`, `http://`, `mailto:` or `tel:`.** Any other value
    stops the api and the worker from starting. PDFs and DOCX files already rendered keep the old
    link; the web page and new audits use the new one.
-4. **The three switches live in `docker-compose.prod.yml`, not in `.env`.** Values for them in
-   `.env` are ignored. The api and the worker must always agree on them.
+4. **The four switches live in `docker-compose.prod.yml`, not in `.env`.** Values for them in
+   `.env` are ignored. The api and the worker must always agree on them. The frontend gets its own
+   copies there as build args (`NEXT_PUBLIC_PUBLIC_AUDITS_ENABLED`,
+   `NEXT_PUBLIC_SOCIAL_AUDITS_ENABLED`), so changing one means rebuilding the frontend.
 5. **Never edit tracked files on the box.** `deploy.sh` refuses to run over local edits. `.env`
    and its `.env.bak.*` copies are untracked, so they are fine.
 6. **Semrush AI Visibility stays off until there is a second Semrush seat.** A login from this
    stack signs the ai app's bot out ([docs/OPERATIONS.md](docs/OPERATIONS.md) §5).
 7. **Changing `POSTGRES_PASSWORD` in `.env` does not change the database password** once the
    volume exists ([docs/OPERATIONS.md](docs/OPERATIONS.md) §2).
-8. **The two Google keys are the ai app's.** If they are rotated there, update this `.env` too,
-   then recreate the api and the worker.
+8. **The Google PageSpeed key is the ai app's.** If it is rotated there, update this `.env` too,
+   then recreate the api and the worker. The YouTube key copied with it is unused while social
+   audits are off.
 9. **The route lives in another repository:** the `seo` block in `blc-social-audit/Caddyfile`.
 10. **Sites behind a bot check (SiteGround, Cloudflare).** The worker waits up to
     `CRAWLER_CHALLENGE_WAIT_SECONDS` (default 15) for the site's own check to let it through. If
