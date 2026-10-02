@@ -321,6 +321,13 @@ docker inspect --format '{{.Name}} restarts={{.RestartCount}} oom={{.State.OOMKi
   - empty: `OPENAI_API_KEY`, `APIFY_API_TOKEN`, `GOOGLE_PLACES_API_KEY`, `CLERK_ISSUER`,
     `CLERK_AUTHORIZED_PARTIES`, `CLERK_ALLOWED_SUBJECTS`, `SENTRY_DSN`, `ALERT_WEBHOOK_URL`; no
     Semrush values;
+  - to add with the release that brings the blocked-site fallback: `FIRECRAWL_API_KEY` (this
+    app's own key, on Firecrawl's free plan: 1,000 credits a month, one per page). Until it is
+    set the fallback is off (gotcha 10 in 2.8). Its caps have code defaults that fit that plan and
+    need no entry: `CRAWLER_FIRECRAWL_MAX_PAGES` (8 pages an audit),
+    `CRAWLER_FIRECRAWL_DAILY_LIMIT` (10 audits, so at most 80 credits, a UTC day) and
+    `CRAWLER_FIRECRAWL_MONTHLY_PAGE_LIMIT` (900 credits a UTC month, 100 left for manual
+    checks). The worker reads `.env` through `env_file`, so no compose change is needed;
   - the `RICK_*` ceilings are at their defaults, and `RICK_DOMAIN` is unset (it exists only for
     rehearsals on another hostname).
 - **Set by compose, whatever `.env` says:**
@@ -481,8 +488,24 @@ docker compose -p blc-rick-seo-agent -f docker-compose.prod.yml start api worker
     the check does not clear, or the site refuses the server (for example HTTP 403), the audit fails
     with a plain message instead of scoring the check page. At this worker's 1 CPU, SiteGround's
     check often gives up first, so SiteGround sites that have flagged this server usually end with
-    that message. The fix is on the host's side: SiteGround support must allow-list
-    173.255.206.170 (Site Tools has no setting for it).
+    that message.
+    - **The Firecrawl fallback** (when `FIRECRAWL_API_KEY` is set): only when the homepage itself
+      is blocked that way, the worker fetches the pages through Firecrawl (its own addresses,
+      standard mode, no CAPTCHA solving) and the audit goes on from the real pages. The report's
+      "Page coverage" and the web page say the pages were fetched through a rendering service.
+      Caps (2.3), counted in this stack's Redis before anything is sent: 8 pages an audit, 10
+      audits a UTC day, 900 pages (credits) a UTC month. Past a cap, or if Firecrawl is shown the
+      check too or answers the homepage with anything but a page (HTTP 200), the audit fails with
+      the same plain message. Every other site is crawled as before. Each fallback audit logs one
+      `firecrawl_fallback` line in the worker log (outcome and page count, never the key); a cap
+      that stopped it, or Firecrawl refusing the key (401) or out of credits (402), logs it as a
+      WARNING.
+    - On such a site the site-health check sends nothing from this server: its sitemap and link
+      checks are skipped (they would only meet the same wall, and a plain 403 would read as
+      broken pages), its on-page checks still run, and it shows as limited by the bot check.
+      robots.txt still comes from this server. PageSpeed is fetched by Google and is unaffected.
+    - The lasting fix is still on the host's side: SiteGround support must allow-list
+      173.255.206.170 (Site Tools has no setting for it).
 
 ### 2.9 Deeper docs
 
@@ -570,7 +593,7 @@ The box is a ~4 GB, 2-CPU Linode that also serves the live **ai**, **events**,
 | Domain | **Done: `seo.builderleadconverter.com`.** A record to `173.255.206.170`, DNS only (Shayan). The parent's Caddy got its Let's Encrypt certificate (the first one runs to 2026-12-28) and renews it |
 | `BOOKING_URL` for the call-to-action | **Done: `https://www.builderleadconverter.com/contact-us/`**, the page BLC's own website sends its "Schedule a Call" buttons to. Set in the box's `.env` on 29 September and deployed with run 36593197666. To change it: [docs/OPERATIONS.md](docs/OPERATIONS.md) §2 (empty shows the label without a link) |
 | Abuse protection on `POST /audits` | **Edge limits in place:** per visitor, a burst of 3 audit starts, then 1 a minute; for everyone together, 20, then 10 a minute; over that, 429. Polling and reports are never limited. There is still no CAPTCHA or daily quota ([LIMITATIONS.md](docs/LIMITATIONS.md) §2) |
-| API keys | **Decided: only `GOOGLE_PSI_API_KEY` and `YOUTUBE_API_KEY`**, copied from the ai app's `~/blc-social-audit/.env` (free Google quotas, shared with ai). `OPENAI_API_KEY`, `APIFY_API_TOKEN` and `GOOGLE_PLACES_API_KEY` stay empty, so those steps are skipped |
+| API keys | **Decided: `GOOGLE_PSI_API_KEY` and `YOUTUBE_API_KEY`**, copied from the ai app's `~/blc-social-audit/.env` (free Google quotas, shared with ai), **plus this app's own `FIRECRAWL_API_KEY`** (Firecrawl's free plan, 1,000 credits a month) for the blocked-site fallback, added with the release that brings it (2.8, gotcha 10). `OPENAI_API_KEY`, `APIFY_API_TOKEN` and `GOOGLE_PLACES_API_KEY` stay empty, so those steps are skipped |
 | Semrush AI Visibility | **Decided: off** (`AI_VISIBILITY_ENABLED=false`, no Semrush values in `.env`). Semrush allows one live session per account, and a login here signs the parent's bot out; it needs a second seat |
 | Box capacity | Measured 29 Sep: 2.7 GB available of 3.9 GB, 20 GB disk free, plus 43 GB of old build cache. This stack idles near 340 MB (measured in the rehearsal). Enough for now; **8 GB is the comfortable size** once blogs and this edition both run (§7) |
 | Operator access (Clerk) | **Not set up.** `CLERK_ISSUER` is empty on the box, so the operator endpoints answer 403 (checked on 29 September: `/api/audits` 403) |

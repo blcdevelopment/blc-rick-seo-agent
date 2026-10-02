@@ -247,6 +247,13 @@ async def _collect(
     summary = empty_summary()
     examples: dict[str, list[str]] = defaultdict(list)
     notes: list[str] = []
+    # The site's security blocked this server's browser and the pages were fetched through
+    # Firecrawl (crawler.CrawlResult.fetched_via, stored with the crawl JSON, so an enrichment
+    # rerun sees it too). Every request from this server would meet the same wall, and a plain
+    # 401/403 (or a check only its page title gives away) would read as broken pages: the sitemap
+    # and the link sweep send nothing, and the result is partial: bot_blocked. The on-page checks
+    # over the fetched pages still run.
+    site_blocked = crawled_pages.get("fetched_via") == _FETCHED_THROUGH_SERVICE
 
     pages = [page for page in _list(seo_facts.get("pages")) if isinstance(page, dict)]
     _apply_on_page_checks(pages, summary, examples)
@@ -279,7 +286,9 @@ async def _collect(
         # whole-audit deadline itself: a hanging sitemap host (index + children, each with its
         # own timeout and redirect chain) could otherwise overrun the audit before a single
         # link was checked.
-        if deadline is not None and time.monotonic() > deadline:
+        if site_blocked:
+            sitemap_urls, sitemap_status = [], _SITEMAP_SITE_BLOCKED
+        elif deadline is not None and time.monotonic() > deadline:
             sitemap_urls, sitemap_status = [], "skipped"
         else:
             sitemap_urls, sitemap_status = await _sitemap_urls(
@@ -326,9 +335,10 @@ async def _collect(
             notes=notes,
             host_allowed_cache=host_allowed_cache,
             global_deadline=deadline,
-            # The sitemap already met the site's bot check: every link request would meet it
-            # too, so the sweep sends none.
-            walled=sitemap_status == _SITEMAP_BOT_CHECK,
+            # The sitemap already met the site's bot check (or the site blocks this server, see
+            # site_blocked): every link request would meet it too, so the sweep sends none.
+            walled=sitemap_status in {_SITEMAP_BOT_CHECK, _SITEMAP_SITE_BLOCKED},
+            walled_reason=_SITE_BLOCKED_NOTE if site_blocked else None,
         )
 
     summary["sitemap_url_count"] = len(sitemap_urls)
@@ -559,6 +569,14 @@ def _link_inventory(
 _SITEMAP_MAX_DEPTH = 2
 # sitemap_status when the site's bot check answered instead of the sitemap.
 _SITEMAP_BOT_CHECK = "bot_check"
+# sitemap_status when it was not requested at all: the site blocks this server's browser, so the
+# audit's pages came through Firecrawl (crawler.CrawlResult.fetched_via == "firecrawl").
+_FETCHED_THROUGH_SERVICE = "firecrawl"
+_SITEMAP_SITE_BLOCKED = "not_requested_site_blocks_server"
+_SITE_BLOCKED_NOTE = (
+    "The site's security blocks our server, so its pages were fetched through a rendering "
+    "service and its sitemap and links were not checked from our server"
+)
 
 
 async def _sitemap_urls(
@@ -669,9 +687,11 @@ async def _sweep(
     host_allowed_cache: dict[str, bool],
     global_deadline: float | None = None,
     walled: bool = False,
+    walled_reason: str | None = None,
 ) -> JsonDict:
     # `walled`: the site's bot check already answered this sweep (the sitemap fetch), so the
-    # breaker starts tripped and no link request is sent.
+    # breaker starts tripped and no link request is sent. `walled_reason` replaces the note's
+    # opening when the wall is known some other way (the site blocks this server outright).
     #
     # Politeness binds PER TARGET HOST: the audited site takes many requests and needs the
     # narrow lanes + spacing, but outbound links live on DISTINCT third-party hosts and get
@@ -921,10 +941,10 @@ async def _sweep(
         left = ""
         if skipped:
             left = f"; {skipped} URL{'s were' if skipped != 1 else ' was'} left unchecked"
-        notes.append(
-            "Link checking stopped when the site's security check answered instead of its "
-            f"pages{left}. Link results are incomplete and are not scored."
+        opening = walled_reason or (
+            "Link checking stopped when the site's security check answered instead of its pages"
         )
+        notes.append(f"{opening}{left}. Link results are incomplete and are not scored.")
     elif breaker["tripped"]:
         recheck_ok = await _browser_ua_recheck(breaker["sample_url"], settings)
         counters["browser_recheck_ok"] = recheck_ok

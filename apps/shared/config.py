@@ -1,6 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
+from urllib.parse import urlparse
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -275,6 +276,28 @@ class Settings(BaseSettings):
     # through (it never solves or disguises anything), then fails the audit with a plain message
     # instead of scoring the check page. SiteGround's check gives up after 10 s. 0 = don't wait.
     crawler_challenge_wait_seconds: int = Field(default=15, ge=0, le=60)
+    # Firecrawl fallback (firecrawl_fallback.py). Used ONLY when the homepage itself is blocked
+    # by the audited site's security: its bot check did not let the browser through, or it
+    # refused the browser with HTTP 401/403. The pages are then fetched through Firecrawl's
+    # cloud browser (standard mode: default proxy, no stealth, no CAPTCHA solving) and the
+    # audit goes on from the real pages. Every other site keeps the browser crawl. Empty key =>
+    # off, and a blocked homepage fails with the plain message as before. Each page fetched
+    # costs one Firecrawl credit (its screenshot included). The defaults fit Firecrawl's free
+    # plan (1,000 credits a month): at most 8 pages per audit, 10 audits (80 credits) a day, and
+    # never more than 900 credits a month, which keeps 100 for manual checks.
+    firecrawl_api_key: SecretStr | None = None
+    # https only (the key rides in the Authorization header); http only for localhost.
+    firecrawl_api_url: str = "https://api.firecrawl.dev"
+    # Pages fetched per fallback audit (homepage included); never more than crawler_max_pages.
+    crawler_firecrawl_max_pages: int = Field(default=8, ge=1, le=25)
+    # Fallback audits per UTC day, counted in Redis; past it, the plain blocked message. 0 = off.
+    crawler_firecrawl_daily_limit: int = Field(default=10, ge=0, le=1000)
+    # Pages (= credits) per UTC calendar month, reserved in Redis before any page is fetched, so
+    # the total never goes past it; past it, the plain blocked message. 0 = off.
+    crawler_firecrawl_monthly_page_limit: int = Field(default=900, ge=0, le=1_000_000)
+    # How long Firecrawl may take to fetch one page (its own timeout; the request waits a little
+    # longer). Pages are fetched one at a time.
+    crawler_firecrawl_timeout_seconds: int = Field(default=45, ge=10, le=120)
 
     # Optional advisory accessibility pass (axe-core). Default OFF; mirrors
     # screaming_frog_enabled. When enabled, axe runs DURING the crawl (inside the live
@@ -327,6 +350,22 @@ class Settings(BaseSettings):
         value = value.strip()
         if value and not value.startswith(("https://", "http://", "mailto:", "tel:")):
             raise ValueError("booking_url must start with https://, http://, mailto: or tel:")
+        return value
+
+    @field_validator("firecrawl_api_url")
+    @classmethod
+    def validate_firecrawl_api_url(cls, value: str) -> str:
+        # The key rides in this request's Authorization header: never in cleartext over the
+        # network, so https, or http to this machine only (a self-hosted Firecrawl).
+        value = value.strip().rstrip("/")
+        parsed = urlparse(value)
+        local = parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+        if not parsed.hostname or not (
+            parsed.scheme == "https" or (parsed.scheme == "http" and local)
+        ):
+            raise ValueError(
+                "firecrawl_api_url must be an https:// address (http:// only for localhost)"
+            )
         return value
 
     @field_validator("crawler_chromium_executable_path", "screaming_frog_binary", mode="before")

@@ -345,6 +345,18 @@ export interface ReportMetadata {
   llm_model: string;
 }
 
+export interface CrawlSummary {
+  status: string;
+  successful_pages: number;
+  failed_pages: number;
+  skipped_pages: number;
+  failed_page_items: Array<Record<string, unknown>>;
+  skipped_page_items: Array<Record<string, unknown>>;
+  // One plain sentence about how the pages were fetched when it was not our own browser (the
+  // site's security blocked it, so a rendering service fetched them); null otherwise.
+  note?: string | null;
+}
+
 export interface AccessibilityIssue {
   rule_id: string;
   impact: string;
@@ -393,6 +405,7 @@ export interface ReportPayload {
   external_seo_summary: ExternalSeoSummary;
   technical_seo_section: TechnicalSeoSection;
   search_performance_section: SearchPerformanceSection;
+  crawl_summary?: CrawlSummary;
   accessibility_advisory_section?: AccessibilityAdvisorySection;
   website_scope?: WebsiteScope | null;
   // Combined-audit only: the social section + overall readiness appended to the website report.

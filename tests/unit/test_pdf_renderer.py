@@ -233,6 +233,23 @@ def test_render_report_pdf_omits_advisory_section_when_skipped(tmp_path) -> None
 
     text = " ".join((page.extract_text() or "") for page in PdfReader(str(output_path)).pages)
     assert "Automated accessibility scan" not in text
+    assert "rendering service" not in text  # a browser crawl carries no crawl note
+
+
+def test_render_report_pdf_says_when_pages_came_through_the_rendering_service(tmp_path) -> None:
+    crawled = {**_crawled_pages(failed_pages=False), "fetched_via": "firecrawl"}
+    payload = compose_report_payload(
+        _job(), _result(extra_items=0, psi_facts=_complete_psi(), crawled_pages=crawled)
+    )
+    output_path = tmp_path / "service.pdf"
+
+    render_report_pdf(payload, settings=_settings(tmp_path), output_path=output_path)
+
+    text = " ".join((page.extract_text() or "") for page in PdfReader(str(output_path)).pages)
+    assert (
+        "The site's security blocked our browser, so its pages were fetched through a rendering "
+        "service." in " ".join(text.split())
+    )
 
 
 def _settings(tmp_path) -> Settings:

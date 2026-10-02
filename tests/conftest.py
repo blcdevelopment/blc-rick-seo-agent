@@ -36,6 +36,7 @@ _HERMETIC_ENV = {
     "APIFY_API_TOKEN": "",
     "YOUTUBE_API_KEY": "",
     "GOOGLE_PLACES_API_KEY": "",
+    "FIRECRAWL_API_KEY": "",
     "BENCHMARK_ENABLED": "false",
     "BENCHMARK_API_KEY": "",
     "AI_VISIBILITY_ENABLED": "false",

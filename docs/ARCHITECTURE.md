@@ -77,6 +77,7 @@ settings (all in `apps/shared/config.py`; code defaults reproduce the parent app
 | Orchestrator | `apps/worker/tasks.py` | `run_collection_audit` (branches on `audit_type`; `_augment_with_social` for combined/promoted, then the best-effort `_augment_with_benchmark_safely` and `_augment_with_ai_visibility_safely`) + `rerun_external_enrichment_for_audit` + `rerun_ai_visibility_for_audit` drive stages + status updates |
 | Social audit | `apps/worker/stages/social/` | Provider adapters + registry, typed schema, collector, site-link auto-discovery (`discovery.py`), deterministic extractor/scorer/report builder (standalone *and* combined section) |
 | Crawler | `apps/worker/stages/crawler.py` | Playwright render, link discovery, robots, SSRF guards |
+| Blocked-site fallback | `apps/worker/stages/firecrawl_fallback.py` | Only when the site's security blocks the homepage: the same pages fetched through Firecrawl, built into the same `CrawledPage`s (off without `FIRECRAWL_API_KEY`) |
 | PageSpeed | `apps/worker/stages/psi_client.py` | PSI mobile/desktop collection, retries, cache, graceful skip |
 | Extractors | `extractor_seo.py`, `extractor_uxui.py` | Deterministic SEO / UX facts |
 | External SEO | `external_seo.py`, `site_health.py`, `screaming_frog.py`, `google_search_console.py` | Technical-crawl sweep (+ optional Screaming Frog CLI) and GSC facts (skipped with reason `disabled` when `SEARCH_CONSOLE_ENABLED=false`); always degrades gracefully |

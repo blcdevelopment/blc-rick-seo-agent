@@ -886,6 +886,29 @@ def test_render_page_http_error_raises_the_plain_text_unwrapped(fast_polls) -> N
     assert page.looks == 1
 
 
+@pytest.mark.parametrize("status", [401, 403])
+def test_only_the_audited_sites_own_refusal_records_its_status(fast_polls, status) -> None:
+    # A refusal the site itself answered is its security (the Firecrawl fallback may help); one a
+    # redirect to ANOTHER website answered is not, whatever the visitor's text says.
+    own = _ChallengePage(first_status=status, first_headers={}, first_title="Forbidden")
+    with pytest.raises(SiteBlockedError) as excinfo:
+        _render(own, seconds=0)
+    assert excinfo.value.status_code == status
+    assert crawler.site_security_block(excinfo.value) == f"HTTP {status}"
+
+    elsewhere = _ChallengePage(
+        first_status=status,
+        first_headers={},
+        first_title="Forbidden",
+        first_url="https://login.saas.example/sso",
+    )
+    with pytest.raises(SiteBlockedError) as excinfo:
+        _render(elsewhere, seconds=0)
+    assert str(excinfo.value) == http_error_message(status)
+    assert excinfo.value.status_code is None
+    assert crawler.site_security_block(excinfo.value) is None
+
+
 def test_render_page_error_after_a_passed_check_uses_the_final_status(fast_polls) -> None:
     page = _ChallengePage(clears_after=1, real_status=404)
     with pytest.raises(SiteBlockedError) as excinfo:

@@ -1176,6 +1176,9 @@ export default function AuditDetailPage() {
                       {detail.report.metadata.failed_pages > 0 &&
                         ` · ${detail.report.metadata.failed_pages} failed`}
                     </p>
+                    {detail.report.crawl_summary?.note && (
+                      <p className="muted">{detail.report.crawl_summary.note}</p>
+                    )}
                   </div>
                   {detail.report_available ? (
                     <div className="download-buttons">

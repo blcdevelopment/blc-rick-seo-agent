@@ -36,14 +36,22 @@ class SiteBlockedError(CrawlerError):
     short, plain and non-technical. ``page_reason`` describes one page only: crawl_site records it
     for an internal page that failed inside an audit that went on, and the report prints it in its
     "Failed internal pages" table. ``bot_check`` names the audited site's own bot check when that
-    is what blocked the page (None for an HTTP error, or for another website's check)."""
+    is what blocked the page (None for an HTTP error, or for another website's check).
+    ``status_code`` is the HTTP error status the audited site itself answered (None for a bot
+    check, and for an error answered by another website a redirect led to)."""
 
     def __init__(
-        self, message: str, *, page_reason: str | None = None, bot_check: str | None = None
+        self,
+        message: str,
+        *,
+        page_reason: str | None = None,
+        bot_check: str | None = None,
+        status_code: int | None = None,
     ) -> None:
         super().__init__(message)
         self.page_reason = page_reason or message
         self.bot_check = bot_check
+        self.status_code = status_code
 
 
 # Shown when a bot check did not let the browser through (it never cleared, or only a person
@@ -88,10 +96,27 @@ def http_error_page_reason(status_code: int) -> str:
     return f"The site returned an error (HTTP {status_code})"
 
 
-def _http_error(status_code: int) -> SiteBlockedError:
+def _http_error(status_code: int, *, own_site: bool = True) -> SiteBlockedError:
+    """A page that answered with an HTTP error. ``own_site`` is False when a redirect led to
+    another website that answered it: the visitor's text is the same, but no ``status_code`` is
+    recorded, so another website's 401/403 never reads as the audited site's refusal."""
     return SiteBlockedError(
-        http_error_message(status_code), page_reason=http_error_page_reason(status_code)
+        http_error_message(status_code),
+        page_reason=http_error_page_reason(status_code),
+        status_code=status_code if own_site else None,
     )
+
+
+def site_security_block(exc: SiteBlockedError) -> str | None:
+    """What kept the browser off a page when it was the audited site's own security: the label
+    of its bot check (one the browser could not wait out, or one only a person can clear), or
+    "HTTP 401" / "HTTP 403" for a refusal. None for anything else (another website's check,
+    404/410/429/5xx), which the Firecrawl fallback never covers."""
+    if exc.bot_check:
+        return exc.bot_check
+    if exc.status_code in {401, 403}:
+        return f"HTTP {exc.status_code}"
+    return None
 
 
 def _bot_check_error(label: str, *, own_site: bool) -> SiteBlockedError:
@@ -419,9 +444,13 @@ class CrawledPage:
     # loaded, or None. Operator traceability only: stored with the crawl JSON, never shown in a
     # report or to visitors.
     passed_interstitial: str | None = None
+    # "firecrawl" when the page was fetched through Firecrawl because the site's security blocked
+    # our browser (firecrawl_fallback.py); None for the browser crawl. Stored with the crawl JSON
+    # (only when set, so a browser crawl's JSON is unchanged).
+    fetched_via: str | None = None
 
     def to_public_dict(self) -> dict[str, Any]:
-        return {
+        data = {
             "url": self.url,
             "final_url": self.final_url,
             "status": "success",
@@ -436,6 +465,9 @@ class CrawledPage:
             "screenshot_error": self.screenshot_error,
             "passed_interstitial": self.passed_interstitial,
         }
+        if self.fetched_via is not None:
+            data["fetched_via"] = self.fetched_via
+        return data
 
 
 @dataclass(frozen=True)
@@ -473,9 +505,14 @@ class CrawlResult:
     completed_at: str
     max_pages: int
     user_agent: str
+    # Set only when the site's security blocked our browser on the homepage and the pages were
+    # fetched through Firecrawl instead: "firecrawl", and what blocked the browser (a bot check's
+    # label or "HTTP 403"). Operator traceability; a browser crawl's JSON carries neither key.
+    fetched_via: str | None = None
+    browser_blocked_by: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data = {
             "status": self.status,
             "requested_url": self.requested_url,
             "start_url": self.start_url,
@@ -496,6 +533,10 @@ class CrawlResult:
             "skipped_pages": self.skipped_pages,
             "discovered_links": [link.to_dict() for link in self.discovered_links],
         }
+        if self.fetched_via is not None:
+            data["fetched_via"] = self.fetched_via
+            data["browser_blocked_by"] = self.browser_blocked_by
+        return data
 
 
 def _tag_has_ancestor(tag: Tag, names: set[str], tokens: set[str] | None = None) -> bool:
@@ -871,7 +912,7 @@ async def _render_page(
 
         status_code = response.status if response else None
         if is_failed_http_status(status_code):
-            raise _http_error(status_code)
+            raise _http_error(status_code, own_site=not _on_another_site(url, page, response))
 
         html = await page.content()
         title = await page.title()
@@ -1018,6 +1059,34 @@ async def _scan_frames_for_forms(
         return 0, 0
 
 
+def select_child_pages(
+    discovered_links: list[LinkCandidate],
+    robots: RobotsPolicy,
+    settings: Settings,
+    max_pages: int,
+    source_url: str,
+    skipped_pages: list[dict[str, Any]],
+) -> list[LinkCandidate]:
+    """The internal pages to open after the homepage: the best-ranked links, up to
+    ``max_pages - 1``, minus those robots.txt disallows (recorded in ``skipped_pages``)."""
+    targets: list[LinkCandidate] = []
+    for candidate in discovered_links:
+        if len(targets) >= max(max_pages - 1, 0):
+            break
+        if not robots.can_fetch(settings.crawler_user_agent, candidate.url):
+            skipped_pages.append(
+                {
+                    "url": candidate.url,
+                    "status": "skipped",
+                    "reason": "disallowed_by_robots_txt",
+                    "source_url": source_url,
+                }
+            )
+            continue
+        targets.append(candidate)
+    return targets
+
+
 async def crawl_site(url: str, settings: Settings, audit_id: str | None = None) -> CrawlResult:
     started_at = _utc_now()
     start_url = normalize_url(url)
@@ -1029,6 +1098,41 @@ async def crawl_site(url: str, settings: Settings, audit_id: str | None = None) 
     if not robots.can_fetch(settings.crawler_user_agent, start_url):
         raise CrawlerError("Homepage is disallowed by robots.txt.")
 
+    try:
+        return await _crawl_in_browser(url, start_url, robots, settings, audit_id, started_at)
+    except SiteBlockedError as exc:
+        # Only the homepage's error leaves the browser crawl (an internal page's is recorded in
+        # failed_pages). When the site's own security blocked it, the pages may be fetched
+        # through Firecrawl instead; otherwise (and with the fallback off) this error stands.
+        if site_security_block(exc) is None:
+            raise
+        blocked = exc
+    # Imported here because firecrawl_fallback builds on this module.
+    from apps.worker.stages import firecrawl_fallback
+
+    if not firecrawl_fallback.is_enabled(settings):
+        raise blocked
+    return await firecrawl_fallback.crawl_site_via_firecrawl(
+        url,
+        start_url=start_url,
+        robots=robots,
+        settings=settings,
+        audit_id=audit_id,
+        started_at=started_at,
+        blocked=blocked,
+    )
+
+
+async def _crawl_in_browser(
+    url: str,
+    start_url: str,
+    robots: RobotsPolicy,
+    settings: Settings,
+    audit_id: str | None,
+    started_at: str,
+) -> CrawlResult:
+    """The crawl in our own headless Chromium. A SiteBlockedError leaves it only from the
+    homepage: an internal page's failure is recorded in failed_pages and the crawl goes on."""
     failed_pages: list[dict[str, Any]] = []
     skipped_pages: list[dict[str, Any]] = []
     discovered_links: list[LinkCandidate] = []
@@ -1062,21 +1166,14 @@ async def crawl_site(url: str, settings: Settings, audit_id: str | None = None) 
             pages.append(homepage)
             discovered_links = discover_internal_links(homepage.html, homepage.final_url)
 
-            target_candidates: list[LinkCandidate] = []
-            for candidate in discovered_links:
-                if len(target_candidates) >= max(settings.crawler_max_pages - 1, 0):
-                    break
-                if not robots.can_fetch(settings.crawler_user_agent, candidate.url):
-                    skipped_pages.append(
-                        {
-                            "url": candidate.url,
-                            "status": "skipped",
-                            "reason": "disallowed_by_robots_txt",
-                            "source_url": homepage.final_url,
-                        }
-                    )
-                    continue
-                target_candidates.append(candidate)
+            target_candidates = select_child_pages(
+                discovered_links,
+                robots,
+                settings,
+                settings.crawler_max_pages,
+                homepage.final_url,
+                skipped_pages,
+            )
 
             semaphore = asyncio.Semaphore(settings.crawler_concurrency)
             # Set once the site's own bot check blocked a page. Every page not opened yet would

@@ -622,6 +622,9 @@ class CrawlSummary(BaseModel):
     skipped_pages: int = 0
     failed_page_items: list[JsonDict] = Field(default_factory=list)
     skipped_page_items: list[JsonDict] = Field(default_factory=list)
+    # One plain sentence about how the pages were fetched, when it differs from our own browser
+    # (the PDF prints it under "Page coverage", the DOCX next to the page count). None otherwise.
+    note: str | None = None
 
 
 class Appendix(BaseModel):
@@ -1676,6 +1679,14 @@ def _inspection_item(item: JsonDict) -> JsonDict:
     return {**item, "on_google_label": on_google_label}
 
 
+# The crawl note for an audit whose pages came through Firecrawl because the site's security
+# blocked our browser (crawler.CrawlResult.fetched_via). No vendor name: visitors read it.
+FETCHED_THROUGH_SERVICE_NOTE = (
+    "The site's security blocked our browser, so its pages were fetched through a rendering "
+    "service."
+)
+
+
 def _crawl_summary(crawled_pages: JsonDict) -> CrawlSummary:
     summary = _dict(crawled_pages.get("summary"))
     return CrawlSummary(
@@ -1685,6 +1696,11 @@ def _crawl_summary(crawled_pages: JsonDict) -> CrawlSummary:
         skipped_pages=int(summary.get("skipped_pages") or 0),
         failed_page_items=[_dict(page) for page in _list(crawled_pages.get("failed_pages"))],
         skipped_page_items=[_dict(page) for page in _list(crawled_pages.get("skipped_pages"))],
+        note=(
+            FETCHED_THROUGH_SERVICE_NOTE
+            if crawled_pages.get("fetched_via") == "firecrawl"
+            else None
+        ),
     )
 
 
