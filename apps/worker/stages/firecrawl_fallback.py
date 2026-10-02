@@ -150,7 +150,20 @@ _MARKUP_CHECKS: tuple[tuple[str, tuple[re.Pattern[str], ...]], ...] = (
         "SiteGround anti-bot check",
         (re.compile(r"""sgsubmit_url\s*=\s*["']/\.well-known/sgcaptcha/"""),),
     ),
-    ("Cloudflare challenge", (re.compile(r"\b_cf_chl_opt\b"),)),
+    # Cloudflare's challenge page sets _cf_chl_opt with a challenge type and loads its
+    # orchestrate/chl_page script. A Turnstile widget on an ordinary page (a contact form's spam
+    # check) sets _cf_chl_opt too, but with neither of those: found on tchomesmn.com/contact-us,
+    # 2 October 2026, which stopped a real audit after its second page.
+    (
+        "Cloudflare challenge",
+        (
+            re.compile(r"\b_cf_chl_opt\b"),
+            re.compile(
+                r"""cType\s*:\s*["'](?:managed|non-interactive|interactive)["']"""
+                r"""|/cdn-cgi/challenge-platform/[^"'\s]*orchestrate/chl_page/"""
+            ),
+        ),
+    ),
     ("AWS WAF challenge", (re.compile(r"\bgokuProps\b"), re.compile(r"\.awswaf\.com/"))),
     ("Vercel challenge", (re.compile(r"""["']/\.well-known/vercel/security/"""),)),
 )

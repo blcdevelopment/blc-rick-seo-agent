@@ -125,6 +125,14 @@ CLOUDFLARE_PROXIED_EXTRA = (
     "challenge-platform/h/b/scripts/jsd/e0c90b6a3ed1/main.js';document.getElementsByTagName("
     "'head')[0].appendChild(a);\";document.head.appendChild(d);})();</script>"
 )
+# A Turnstile widget on an ordinary page (abridged from tchomesmn.com/contact-us, 2 Oct 2026):
+# it sets _cf_chl_opt too, with obfuscated keys and no challenge type or chl_page script.
+TURNSTILE_WIDGET_EXTRA = (
+    "<script>window._cf_chl_opt = {PlpMJ2: '3',PqQq5: 'challenges.cloudflare.com',AkAG5: 5,"
+    "QTOw9: '0',uEsi2: 'invisible',DTewp1: 'normal'};</script><script src=\"https://challenges."
+    'cloudflare.com/turnstile/v0/api.js" async defer></script><div class="cf-turnstile" '
+    'data-sitekey="0x4AAAAAAA"></div>'
+)
 AWS_WAF_INTEGRATION_EXTRA = (
     '<script src="https://3ec7f2a0b1c2.edge.sdk.awswaf.com/3ec7f2a0b1c2/4e5d6f/'
     'challenge.compact.js" defer></script><script>AwsWafIntegration.getToken();</script>'
@@ -866,7 +874,9 @@ def test_a_check_only_its_markup_gives_away_is_never_scored(world, html, status)
 
 def test_ordinary_pages_with_vendor_scripts_are_not_checks(world) -> None:
     html = _page_html(
-        "Acme", "/about-us/", extra=CLOUDFLARE_PROXIED_EXTRA + AWS_WAF_INTEGRATION_EXTRA
+        "Acme",
+        "/about-us/",
+        extra=CLOUDFLARE_PROXIED_EXTRA + AWS_WAF_INTEGRATION_EXTRA + TURNSTILE_WIDGET_EXTRA,
     )
     world.firecrawl.pages[f"{SITE}/"] = _scraped(f"{SITE}/", html)
     world.firecrawl.pages[f"{SITE}/about-us"] = _scraped(f"{SITE}/about-us", html)
