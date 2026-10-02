@@ -55,7 +55,7 @@ This decides whether a change needs a **rebuild** or just a **recreate**.
 
 | Change | Command | Rebuild? |
 |---|---|---|
-| Backend key in `.env` (Apify, YouTube, OpenAI, PSI, Places, Sentry, `AI_VISIBILITY_*`) | `up -d --force-recreate api worker` | No |
+| Backend key in `.env` (Apify, YouTube, OpenAI, PSI, Places, Firecrawl, Sentry, `AI_VISIBILITY_*`) | `up -d --force-recreate api worker` | No |
 | `BOOKING_URL` / `BOOKING_CTA_LABEL` in `.env` | `up -d --force-recreate api worker` | No |
 | `REPORT_PROFILE` / `PUBLIC_AUDITS_ENABLED` / `SEARCH_CONSOLE_ENABLED` | edit them in `docker-compose.prod.yml` (a code change), then recreate **both** api and worker | No |
 | `NEXT_PUBLIC_*` | `up -d --build frontend` | Yes (frontend) |
@@ -202,7 +202,8 @@ suspend the account — a business-risk decision the operator owns. Keep volume 
 | AI Visibility section missing (teaser) | No valid Semrush session, or `AI_VISIBILITY_ENABLED=false` | §5 |
 | Combined audit has no social section | `APIFY_API_TOKEN` / `YOUTUBE_API_KEY` missing, or the site links no profiles | Add the keys, recreate api + worker |
 | Audits sit at `queued` | Worker down, or pointed at another broker | Check `docker compose ps`, worker logs |
-| Audit failed: "Its security check blocked our scanner" or "It refused our scanner (HTTP 403)" | The site's host (often SiteGround) has flagged the server's address, 173.255.206.170 | Only the host can fix it: SiteGround support must allow-list the address (Site Tools has no setting). `CRAWLER_CHALLENGE_WAIT_SECONDS` only sets how long the worker waits |
+| Audit failed: "Its security check blocked our scanner" or "It refused our scanner (HTTP 403)" | The site's host (often SiteGround) has flagged the server's address, 173.255.206.170, and the Firecrawl fallback did not help: `FIRECRAWL_API_KEY` is empty, the day's `CRAWLER_FIRECRAWL_DAILY_LIMIT` is used up, Firecrawl was blocked too, or Firecrawl failed | The worker log's `firecrawl_fallback` line names the outcome (`daily_limit_reached`, `still_blocked`, `service_error`, ...); no line means the fallback is off. The lasting fix is the host's: SiteGround support must allow-list the address (Site Tools has no setting). `CRAWLER_CHALLENGE_WAIT_SECONDS` only sets how long the worker waits |
+| A report says its pages were "fetched through a rendering service" | Expected: the site's security blocked the server's browser, so the Firecrawl fallback fetched the pages | Nothing to do. Its site-health check is limited by the same bot check |
 | Build fails / OOM | `next build` on a small box | Confirm swap is active (`swapon --show`); build one image at a time |
 
 ## 8. Security posture
@@ -216,7 +217,9 @@ suspend the account — a business-risk decision the operator owns. Keep volume 
 - **The teaser hides fixes; the database keeps them.** Backups and DB access expose everything.
 - **`.env` holds every secret** (`chmod 600`, never committed; `.env.bak.*` deserves the same care).
   This edition reuses only two of the parent's keys, `GOOGLE_PSI_API_KEY` and `YOUTUBE_API_KEY`
-  (shared free quota); OpenAI, Apify and Places are not set here.
+  (shared free quota); OpenAI, Apify and Places are not set here. `FIRECRAWL_API_KEY` (the
+  blocked-site fallback), when set, is this app's own: it is sent only to Firecrawl, in a header,
+  and never logged.
 - **No Google OAuth tokens are stored** (Search Console is off).
 - **API keys never ride in URLs** and the HTTP client loggers are held at WARNING, so credentials
   don't reach the logs. `/docs`, `/redoc` and `/openapi.json` are disabled when

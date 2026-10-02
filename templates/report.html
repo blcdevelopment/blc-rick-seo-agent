@@ -1072,6 +1072,9 @@
         findings come from those pages; the site-wide health check additionally checks
         the links and sitemap URLs it discovered.
       </p>
+      {% if payload.crawl_summary.note %}
+        <p class="helper-copy">{{ payload.crawl_summary.note }}</p>
+      {% endif %}
       <dl class="metric-list inline">
         <div><dt>Pages rendered</dt><dd>{{ payload.crawl_summary.successful_pages }}</dd></div>
         <div><dt>Failed to load</dt><dd>{{ payload.crawl_summary.failed_pages }}</dd></div>

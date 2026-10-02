@@ -275,6 +275,21 @@ class Settings(BaseSettings):
     # through (it never solves or disguises anything), then fails the audit with a plain message
     # instead of scoring the check page. SiteGround's check gives up after 10 s. 0 = don't wait.
     crawler_challenge_wait_seconds: int = Field(default=15, ge=0, le=60)
+    # Firecrawl fallback (firecrawl_fallback.py). Used ONLY when the homepage itself is blocked
+    # by the audited site's security: its bot check did not let the browser through, or it
+    # refused the browser with HTTP 401/403. The pages are then fetched through Firecrawl's
+    # cloud browser (standard mode: default proxy, no stealth, no CAPTCHA solving) and the
+    # audit goes on from the real pages. Every other site keeps the browser crawl. Empty key =>
+    # off, and a blocked homepage fails with the plain message as before. Billed per page.
+    firecrawl_api_key: SecretStr | None = None
+    firecrawl_api_url: str = "https://api.firecrawl.dev"
+    # Pages fetched per fallback audit (homepage included); never more than crawler_max_pages.
+    crawler_firecrawl_max_pages: int = Field(default=10, ge=1, le=25)
+    # Fallback audits per UTC day, counted in Redis; past it, the plain blocked message. 0 = off.
+    crawler_firecrawl_daily_limit: int = Field(default=30, ge=0, le=1000)
+    # How long Firecrawl may take to fetch one page (its own timeout; the request waits a little
+    # longer). Pages are fetched one at a time.
+    crawler_firecrawl_timeout_seconds: int = Field(default=45, ge=10, le=120)
 
     # Optional advisory accessibility pass (axe-core). Default OFF; mirrors
     # screaming_frog_enabled. When enabled, axe runs DURING the crawl (inside the live
@@ -327,6 +342,15 @@ class Settings(BaseSettings):
         value = value.strip()
         if value and not value.startswith(("https://", "http://", "mailto:", "tel:")):
             raise ValueError("booking_url must start with https://, http://, mailto: or tel:")
+        return value
+
+    @field_validator("firecrawl_api_url")
+    @classmethod
+    def validate_firecrawl_api_url(cls, value: str) -> str:
+        # The key rides in this request's Authorization header, so only a real web address.
+        value = value.strip().rstrip("/")
+        if not value.startswith(("https://", "http://")):
+            raise ValueError("firecrawl_api_url must start with https:// or http://")
         return value
 
     @field_validator("crawler_chromium_executable_path", "screaming_frog_binary", mode="before")

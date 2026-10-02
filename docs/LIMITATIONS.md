@@ -153,6 +153,25 @@ one report (PDF and DOCX). Known limits of that flow:
   a short reason and the pages not opened yet are skipped, since each would meet the same check.
   A link that leads to another website's check fails at once, without waiting, and stops
   nothing. A host that has flagged the server must allow-list it.
+- **Blocked homepage: the Firecrawl fallback** (only when `FIRECRAWL_API_KEY` is set). When the
+  site's own check, or a 401/403, keeps the browser off the homepage, the pages are fetched
+  through Firecrawl instead (`apps/worker/stages/firecrawl_fallback.py`): standard mode only (no
+  stealth proxy, no CAPTCHA solving), one attempt per page, one page at a time, at most
+  `CRAWLER_FIRECRAWL_MAX_PAGES` (10) pages and `CRAWLER_FIRECRAWL_DAILY_LIMIT` (30) fallback
+  audits per UTC day (a Redis counter; if Redis cannot count, there is no fallback). If Firecrawl
+  is shown the check or a 401/403 too, fails, or the day's allowance is used up, the audit fails
+  with the same plain message as before. Not covered: 404/410/429/5xx, timeouts, DNS errors, and a
+  blocked internal page on a site whose homepage loaded. What differs from a browser crawl:
+  - the pages are the real HTML Firecrawl's browser rendered, so every analyser runs unchanged,
+    but forms inside iframes are not counted (a known form provider's embed is still credited
+    from the HTML), the optional axe accessibility pass has no result for these pages, and the
+    stored text length counts text that CSS may hide;
+  - the full-page screenshots come from Firecrawl (its window may be wider than 1280 px);
+  - robots.txt and the site-health link check still come from this server, so they stay limited
+    by the bot check (robots "unavailable", the sweep `partial: bot_blocked`);
+  - the report's "Page coverage" (PDF) and its header (DOCX) say the pages were fetched through a
+    rendering service; the crawl JSON stores `fetched_via: "firecrawl"` and what blocked the
+    browser.
 - **Form detection errs toward credit (accepted tradeoff, 2026-07-03).** Popup/embedded
   lead forms are detected via provider signatures matched anywhere in the page HTML and a
   bounded runtime frame pass, so (a) a page merely *mentioning* a form provider (e.g. a blog

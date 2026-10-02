@@ -321,6 +321,11 @@ docker inspect --format '{{.Name}} restarts={{.RestartCount}} oom={{.State.OOMKi
   - empty: `OPENAI_API_KEY`, `APIFY_API_TOKEN`, `GOOGLE_PLACES_API_KEY`, `CLERK_ISSUER`,
     `CLERK_AUTHORIZED_PARTIES`, `CLERK_ALLOWED_SUBJECTS`, `SENTRY_DSN`, `ALERT_WEBHOOK_URL`; no
     Semrush values;
+  - to add with the release that brings the blocked-site fallback: `FIRECRAWL_API_KEY` (this
+    app's own Firecrawl key). Until it is set the fallback is off (gotcha 10 in 2.8). Its caps,
+    `CRAWLER_FIRECRAWL_MAX_PAGES` (10) and `CRAWLER_FIRECRAWL_DAILY_LIMIT` (30 a day), have code
+    defaults and need no entry. The worker reads `.env` through `env_file`, so no compose change
+    is needed;
   - the `RICK_*` ceilings are at their defaults, and `RICK_DOMAIN` is unset (it exists only for
     rehearsals on another hostname).
 - **Set by compose, whatever `.env` says:**
@@ -481,8 +486,20 @@ docker compose -p blc-rick-seo-agent -f docker-compose.prod.yml start api worker
     the check does not clear, or the site refuses the server (for example HTTP 403), the audit fails
     with a plain message instead of scoring the check page. At this worker's 1 CPU, SiteGround's
     check often gives up first, so SiteGround sites that have flagged this server usually end with
-    that message. The fix is on the host's side: SiteGround support must allow-list
-    173.255.206.170 (Site Tools has no setting for it).
+    that message.
+    - **The Firecrawl fallback** (when `FIRECRAWL_API_KEY` is set): only when the homepage itself
+      is blocked that way, the worker fetches the pages through Firecrawl (its own addresses,
+      standard mode, no CAPTCHA solving) and the audit goes on from the real pages. The report's
+      "Page coverage" says the pages were fetched through a rendering service. At most
+      `CRAWLER_FIRECRAWL_MAX_PAGES` (10) pages per audit and `CRAWLER_FIRECRAWL_DAILY_LIMIT` (30)
+      such audits per UTC day, counted in this stack's Redis; past that, or if Firecrawl is shown
+      the check too, the audit fails with the same plain message. Every other site is crawled as
+      before. Each fallback audit logs one `firecrawl_fallback` line in the worker log (outcome
+      and page count, never the key).
+    - The site-health link check and robots.txt still come from this server, so on such a site
+      they show as limited by the bot check. PageSpeed is fetched by Google and is unaffected.
+    - The lasting fix is still on the host's side: SiteGround support must allow-list
+      173.255.206.170 (Site Tools has no setting for it).
 
 ### 2.9 Deeper docs
 

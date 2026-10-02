@@ -29,6 +29,21 @@ def test_render_report_docx_writes_valid_package(tmp_path) -> None:
     assert "Lead Generation Roadmap" in document
 
 
+def test_render_report_docx_says_when_pages_came_through_the_rendering_service(tmp_path) -> None:
+    plain = _result()
+    fetched = _result()
+    fetched.crawled_pages = {**fetched.crawled_pages, "fetched_via": "firecrawl"}
+    documents = []
+    for name, result in (("plain", plain), ("fetched", fetched)):
+        output_path = tmp_path / f"{name}.docx"
+        render_report_docx(compose_report_payload(_job(), result), output_path=output_path)
+        with ZipFile(output_path) as archive:
+            documents.append(archive.read("word/document.xml").decode("utf-8"))
+
+    assert "rendering service" not in documents[0]
+    assert "pages were fetched through a rendering service." in documents[1]
+
+
 def test_render_report_docx_appends_benchmark_section(tmp_path) -> None:
     # When a benchmark ran, the DOCX must append the Competitor Benchmarking section too (parity
     # with the PDF) — otherwise the same audit's PDF and DOCX diverge.

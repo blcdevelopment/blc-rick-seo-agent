@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 from uuid import uuid4
 
-from apps.worker.stages.report_payload import compose_report_payload
+from apps.worker.stages.report_payload import FETCHED_THROUGH_SERVICE_NOTE, compose_report_payload
 
 
 def test_compose_report_payload_includes_epic_4_contract() -> None:
@@ -43,6 +43,18 @@ def test_compose_report_payload_includes_epic_4_contract() -> None:
     assert payload.crawl_summary.failed_pages == 1
     assert payload.appendix.seo_rules
     assert payload.appendix.uxui_rules
+
+
+def test_crawl_note_only_when_pages_came_through_the_rendering_service() -> None:
+    # A browser crawl carries no note (and no fetched_via key at all).
+    assert compose_report_payload(_job(), _result()).crawl_summary.note is None
+    crawled = {**_crawled_pages(), "fetched_via": "firecrawl", "browser_blocked_by": "HTTP 403"}
+    payload = compose_report_payload(_job(), _result(crawled_pages=crawled))
+    assert payload.crawl_summary.note == FETCHED_THROUGH_SERVICE_NOTE
+    # Visitors read the payload: no vendor name, no internal label.
+    dumped = payload.model_dump_json()
+    assert "irecrawl" not in dumped
+    assert "HTTP 403" not in dumped
 
 
 def test_compose_report_payload_falls_back_to_rubric_findings_without_commentary() -> None:

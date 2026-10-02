@@ -88,6 +88,8 @@ def _document_xml(payload: ReportPayload) -> str:
     parts.append(_paragraph(metadata.final_url, "Subtitle"))
     parts.append(_paragraph(f"Generated: {metadata.generated_date}", "Meta"))
     parts.append(_paragraph(f"Pages reviewed: {metadata.pages_crawled}", "Meta"))
+    if payload.crawl_summary.note:
+        parts.append(_paragraph(payload.crawl_summary.note, "Meta"))
     if metadata.niche:
         parts.append(_paragraph(f"Niche: {metadata.niche}", "Meta"))
     if metadata.target_audience:

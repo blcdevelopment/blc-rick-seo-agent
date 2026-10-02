@@ -74,6 +74,8 @@ def configure_local_env(tmp_dir: Path) -> None:
             "APIFY_API_TOKEN": "",
             "YOUTUBE_API_KEY": "",
             "GOOGLE_PLACES_API_KEY": "",
+            # Firecrawl (the blocked-site fallback) is billed per page: never from a QA run.
+            "FIRECRAWL_API_KEY": "",
             "BENCHMARK_ENABLED": "false",
             # No outbound error reports from a local QA run.
             "SENTRY_DSN": "",
