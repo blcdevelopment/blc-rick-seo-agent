@@ -23,18 +23,15 @@ The **Website Audit** page is the only submission form:
 | Field | Notes |
 |---|---|
 | **Website URL** | Required. The only mandatory field |
-| **Niche** | Optional. Printed on the report cover, and used to judge whether a social profile's business category matches the niche |
+| **Niche** | Optional. Printed on the report cover |
 | **Target audience** | Optional. Printed on the report cover |
-| **Social media** *(collapsible)* | Optional Instagram / Facebook / YouTube links or `@handles`. **Leave blank and the site's own profile links are auto-detected** from its header/footer |
 
-Providing (or auto-detecting) any social profile turns the run into a **combined audit**: the
-website audit runs first, then the social audit, producing one report with a Social Media Audit
-section and an Overall Lead-Gen Readiness score at the end.
-
-If social data can't be collected, an **auto-detected** profile simply leaves the report
-website-only. Profiles that were **typed in** keep a Social section that says they could not be
-collected. Neither is an error. The public site does not accept social-only audits (a website URL is
-required).
+**Social media is not part of this edition's audit** (`SOCIAL_AUDITS_ENABLED=false`, with the UI
+built with `NEXT_PUBLIC_SOCIAL_AUDITS_ENABLED=false`). The form has no social fields, the audit
+does not look at the site's Instagram / Facebook / YouTube links, and the report has no Social
+Media Audit section and no Social or Overall Lead-Gen Readiness score. A request that carries
+social handles is refused with *"Social media audits are not available here."* Reports completed
+before the switch keep the social section they had.
 
 ## 3. Watching progress
 
@@ -43,7 +40,6 @@ The audit page polls every 2.5 seconds and shows the stage and percentage:
 ```
 queued → crawling (15%) → PageSpeed (45%) → extracting SEO + UX/UI (70%)
        → external SEO (76%) → scoring (80%) → commentary (88%) → validating (95%)
-       → [when social profiles were given or auto-detected: "Auditing social profiles" (96%)]
        → [if AI Visibility is on: "Collecting AI visibility insights" (97%)]
        → rendering (98%) → complete (100%)
 ```
@@ -57,9 +53,9 @@ status becomes **failed** with a message, and the audit can simply be re-submitt
 |---|---|
 | **SEO** | Search-visibility fundamentals: titles, meta descriptions, headings, canonicals, schema, alt text, indexability, internal links, the site-wide technical crawl, local-SEO and answer-engine structure, security, Core Web Vitals |
 | **UX/UI** | Conversion signals: CTAs, lead forms (including popups and embeds), contact paths, trust signals, navigation |
-| **Lead Generation Readiness** | The headline website number — 45% SEO + 55% UX/UI |
-| **Social** *(combined only)* | 0–100 across the audited Instagram / Facebook / YouTube profiles |
-| **Overall Lead-Gen Readiness** *(combined only)* | 70% website Lead-Gen + 30% Social. With no social score it rescales to the website score alone |
+| **Lead Generation Readiness** | The headline number — 45% SEO + 55% UX/UI |
+
+There is no Social or Overall Lead-Gen Readiness score in this edition (social audits are off).
 
 Colour bands are identical in the UI and the PDF: **≥75 strong, ≥50 fair, <50 weak.**
 
@@ -74,11 +70,9 @@ produce the same numbers.
 This edition renders the **teaser** profile (`REPORT_PROFILE=teaser`):
 
 - **Shown:** the scores, an executive summary, and every finding with its severity, what it means,
-  why it matters and where it was found; the site-health issues and PageSpeed metrics; the social
-  section's findings, strengths and statistics.
+  why it matters and where it was found; the site-health issues and PageSpeed metrics.
 - **Not shown:** anything that says how to fix a problem — no "Do this" steps, no recommendations,
-  no roadmap or timeframes, no technical "recommended fix", no accessibility fix guidance, no social
-  remediation.
+  no roadmap or timeframes, no technical "recommended fix", no accessibility fix guidance.
 - **Instead:** a **"Get the fixes"** call-to-action after the executive summary and again where the
   roadmap would be (a **Next Steps** page in the PDF), with the `BOOKING_CTA_LABEL` text ("Book a
   meeting with Rick") linking to `BOOKING_URL`. With no URL configured it shows the label only.
@@ -103,6 +97,9 @@ leaves the section out ([OPERATIONS.md](OPERATIONS.md) §5).
 
 - **Search Console is switched off in this edition** (`SEARCH_CONSOLE_ENABLED=false`): no Google
   connection, no Search Console sections, and its checks are skipped.
+- **Social media audits are switched off in this edition** (`SOCIAL_AUDITS_ENABLED=false`): no
+  social discovery, no Apify / YouTube / Google Places calls, no social section. A combined audit
+  queued before the switch runs as a website audit; a social-only one fails with the message in §2.
 - **Audit history** is not in the public navigation. Locally (no Clerk, `APP_ENV=local`) it is at
   `/audits`: every audit with a type badge (**Web**, **Full**, **Social**) and its scores; search,
   filter and sort work client-side over the rows loaded (up to 100).
@@ -115,8 +112,9 @@ leaves the section out ([OPERATIONS.md](OPERATIONS.md) §5).
 
 | Symptom | Likely cause | What to do |
 |---|---|---|
-| Report has no Social section | No social profile given or auto-detected, or collection failed/keyless | Re-submit with explicit profile links; if it persists, the server may be missing the provider key |
-| Social section says data couldn't be collected | Private/renamed profile, or the provider returned nothing | Verify the handle resolves publicly in a browser |
+| Report has no Social section | Expected: social audits are off in this edition | Nothing to do |
+| An older report still has a Social section | It was completed before social audits were switched off | Nothing to do |
+| The form still shows social media fields | The UI was built without `NEXT_PUBLIC_SOCIAL_AUDITS_ENABLED=false` | Rebuild the frontend |
 | PageSpeed numbers missing | No PageSpeed API key configured | Expected — those rules skip and don't lower the score |
 | No AI Visibility section | AI Visibility is off, or there is no valid Semrush session | See [OPERATIONS.md](OPERATIONS.md) §5 |
 | The site asks visitors to sign in | The UI was built without `NEXT_PUBLIC_PUBLIC_AUDITS_ENABLED=true` | Rebuild the frontend |

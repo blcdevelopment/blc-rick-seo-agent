@@ -29,6 +29,8 @@ export interface AuditCreateRequest {
   niche?: string | null;
   target_audience?: string | null;
   brand_overrides?: BrandOverrides | null;
+  // Never sent when the UI is built with NEXT_PUBLIC_SOCIAL_AUDITS_ENABLED=false; an API running
+  // with SOCIAL_AUDITS_ENABLED=false answers 422 to any request that carries a handle.
   social_handles?: Record<string, string> | null;
 }
 

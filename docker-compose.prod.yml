@@ -75,6 +75,7 @@ services:
       REPORT_PROFILE: teaser
       PUBLIC_AUDITS_ENABLED: "true"
       SEARCH_CONSOLE_ENABLED: "false"
+      SOCIAL_AUDITS_ENABLED: "false"
       # Same-origin in prod (UI + /api on one domain), but keep CORS correct anyway.
       # RICK_DOMAIN exists only so a local rehearsal can use another hostname.
       API_CORS_ORIGINS: https://${RICK_DOMAIN:-seo.builderleadconverter.com}
@@ -124,6 +125,7 @@ services:
       REPORT_PROFILE: teaser
       PUBLIC_AUDITS_ENABLED: "true"
       SEARCH_CONSOLE_ENABLED: "false"
+      SOCIAL_AUDITS_ENABLED: "false"
       # 4 GB box: keep one browser alive at a time.
       CRAWLER_CONCURRENCY: "1"
     volumes:
@@ -155,6 +157,8 @@ services:
         NEXT_PUBLIC_APP_NAME: "BLC Website Audit"
         # Public build: renders without Clerk, so the Clerk keys below are not needed.
         NEXT_PUBLIC_PUBLIC_AUDITS_ENABLED: "true"
+        # No social media fields on the form (the api and worker pin SOCIAL_AUDITS_ENABLED off).
+        NEXT_PUBLIC_SOCIAL_AUDITS_ENABLED: "false"
         NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-}
     # No env_file here on purpose: the internet-facing frontend must not see the DB password
     # or the API keys that live in the root .env.

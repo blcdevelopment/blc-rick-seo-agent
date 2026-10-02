@@ -2,8 +2,8 @@
 # Uses Next.js "standalone" output for a small runtime image.
 #
 # NOTE: NEXT_PUBLIC_* values are baked at BUILD time, so the API base URL, the public-audits
-# flag and (for a Clerk-gated build) the Clerk publishable key must be passed as build args
-# (see docker-compose.prod.yml).
+# and social-audits flags and (for a Clerk-gated build) the Clerk publishable key must be passed
+# as build args (see docker-compose.prod.yml).
 
 # ---- deps ----
 FROM node:20-alpine AS deps
@@ -20,10 +20,12 @@ ARG NEXT_PUBLIC_API_BASE_URL
 ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
 ARG NEXT_PUBLIC_APP_NAME
 ARG NEXT_PUBLIC_PUBLIC_AUDITS_ENABLED
+ARG NEXT_PUBLIC_SOCIAL_AUDITS_ENABLED
 ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL \
     NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY \
     NEXT_PUBLIC_APP_NAME=$NEXT_PUBLIC_APP_NAME \
     NEXT_PUBLIC_PUBLIC_AUDITS_ENABLED=$NEXT_PUBLIC_PUBLIC_AUDITS_ENABLED \
+    NEXT_PUBLIC_SOCIAL_AUDITS_ENABLED=$NEXT_PUBLIC_SOCIAL_AUDITS_ENABLED \
     NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 

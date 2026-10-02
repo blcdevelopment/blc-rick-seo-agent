@@ -4,6 +4,7 @@ from uuid import UUID
 
 from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, model_validator
 
+from apps.shared.config import get_settings
 from apps.worker.stages.report_payload import ReportPayload
 
 
@@ -36,6 +37,10 @@ class AuditCreateRequest(BaseModel):
 
     @model_validator(mode="after")
     def _validate_inputs(self) -> "AuditCreateRequest":
+        if self.audit_type != "website" and not get_settings().social_audits_enabled:
+            # Social media audits are switched off: the create route refuses every social or
+            # combined request with one plain message, so don't first ask for a URL or a handle.
+            return self
         if self.audit_type in ("website", "combined") and self.url is None:
             raise ValueError("url is required for a website or combined audit")
         if self.audit_type in ("social", "combined"):

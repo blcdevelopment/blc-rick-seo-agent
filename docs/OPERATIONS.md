@@ -40,24 +40,25 @@ memory ceiling, set by the `RICK_*_MEM_LIMIT` values in `.env` ([DEPLOYMENT.md](
 This decides whether a change needs a **rebuild** or just a **recreate**.
 
 - **`api` and `worker`** load `.env` via `env_file:`, plus compose `environment:` overrides:
-  `APP_ENV=production`, the database URL, Redis, the storage dirs, and this edition's three
+  `APP_ENV=production`, the database URL, Redis, the storage dirs, and this edition's four
   switches, **pinned on both services** so the worker (PDF, DOCX) and the api (JSON) always agree:
-  `REPORT_PROFILE=teaser`, `PUBLIC_AUDITS_ENABLED=true`, `SEARCH_CONSOLE_ENABLED=false`. The api
-  also gets `API_CORS_ORIGINS`, `AUDIT_ENQUEUE_ENABLED` and an optional `CLERK_ISSUER`.
+  `REPORT_PROFILE=teaser`, `PUBLIC_AUDITS_ENABLED=true`, `SEARCH_CONSOLE_ENABLED=false`,
+  `SOCIAL_AUDITS_ENABLED=false`. The api also gets `API_CORS_ORIGINS`, `AUDIT_ENQUEUE_ENABLED` and
+  an optional `CLERK_ISSUER`.
 - **Compose `${VAR}` interpolation** is read at `up`/`build` time; only `POSTGRES_PASSWORD` has a
   `:?` guard that aborts when empty.
 - **`frontend`** has no `env_file` (the internet-facing UI must never see the DB password or API
   keys). Its build args — `NEXT_PUBLIC_API_BASE_URL`, `NEXT_PUBLIC_APP_NAME`,
-  `NEXT_PUBLIC_PUBLIC_AUDITS_ENABLED=true` — are **baked at build time**, so changing one requires
-  a **rebuild**.
+  `NEXT_PUBLIC_PUBLIC_AUDITS_ENABLED=true`, `NEXT_PUBLIC_SOCIAL_AUDITS_ENABLED=false` — are **baked
+  at build time**, so changing one requires a **rebuild**.
 
 ### Rebuild-vs-recreate cheat sheet
 
 | Change | Command | Rebuild? |
 |---|---|---|
-| Backend key in `.env` (Apify, YouTube, OpenAI, PSI, Places, Firecrawl, Sentry, `AI_VISIBILITY_*`) | `up -d --force-recreate api worker` | No |
+| Backend key in `.env` (PSI, Firecrawl, OpenAI, Sentry, `AI_VISIBILITY_*`; the social keys do nothing while social audits are off) | `up -d --force-recreate api worker` | No |
 | `BOOKING_URL` / `BOOKING_CTA_LABEL` in `.env` | `up -d --force-recreate api worker` | No |
-| `REPORT_PROFILE` / `PUBLIC_AUDITS_ENABLED` / `SEARCH_CONSOLE_ENABLED` | edit them in `docker-compose.prod.yml` (a code change), then recreate **both** api and worker | No |
+| `REPORT_PROFILE` / `PUBLIC_AUDITS_ENABLED` / `SEARCH_CONSOLE_ENABLED` / `SOCIAL_AUDITS_ENABLED` | edit them in `docker-compose.prod.yml` (a code change), then recreate **both** api and worker; `SOCIAL_AUDITS_ENABLED` also has a UI copy (next row) | No |
 | `NEXT_PUBLIC_*` | `up -d --build frontend` | Yes (frontend) |
 | Application code | merge the PR, then **Actions → Deploy → Run workflow** ([DEPLOYMENT.md](../DEPLOYMENT.md) Part 2) | Yes |
 
@@ -70,10 +71,10 @@ up in new reports and on the web page immediately, but existing files keep the o
 ssh <user>@<box>
 cd ~/blc-rick-seo-agent
 cp .env .env.bak.$(date +%F)     # back up first
-nano .env                        # e.g. APIFY_API_TOKEN=..., BOOKING_URL=...
+nano .env                        # e.g. FIRECRAWL_API_KEY=..., BOOKING_URL=...
 docker compose -p blc-rick-seo-agent -f docker-compose.prod.yml up -d --force-recreate api worker
 # confirm without printing secrets:
-docker compose -p blc-rick-seo-agent -f docker-compose.prod.yml exec worker printenv | grep -E 'APIFY|BOOKING' | sed 's/=.*/=<set>/'
+docker compose -p blc-rick-seo-agent -f docker-compose.prod.yml exec worker printenv | grep -E 'FIRECRAWL|BOOKING' | sed 's/=.*/=<set>/'
 ```
 
 `Settings` is `lru_cache`d, so a restart is the only way to pick up a change. ⚠️ Changing
@@ -196,11 +197,14 @@ suspend the account — a business-risk decision the operator owns. Keep volume 
 |---|---|---|
 | Visitors are asked to sign in | The frontend was built without `NEXT_PUBLIC_PUBLIC_AUDITS_ENABLED=true` | Rebuild the frontend |
 | 403 "Operator endpoints are disabled on this public deployment." | Expected: public mode, no `CLERK_ISSUER` | Use a Clerk token, or run the operation locally |
-| 422 "Social-only audits are not available" | Expected in public mode | Submit a website URL; social links are optional |
+| 422 "Social media audits are not available here." | Expected: social audits are off in this edition (`SOCIAL_AUDITS_ENABLED=false`) and the request carried social handles. The form never sends them | Submit the website URL alone |
+| A social-only audit failed with "Social media audits are not available here." | It was queued before social audits were switched off | Nothing to do; run a website audit instead |
 | A report shows an old call-to-action or profile | The PDF/DOCX was rendered before the change | New audits pick it up; the web page already has |
 | Report still shows fixes | api and worker disagree on `REPORT_PROFILE` | Both are pinned in `docker-compose.prod.yml`; recreate both |
 | AI Visibility section missing (teaser) | No valid Semrush session, or `AI_VISIBILITY_ENABLED=false` | §5 |
-| Combined audit has no social section | `APIFY_API_TOKEN` / `YOUTUBE_API_KEY` missing, or the site links no profiles | Add the keys, recreate api + worker |
+| A report has no social section or social score | Expected: social audits are off in this edition | Nothing to do |
+| An older report still shows a social section | It was completed before social audits were switched off; those keep what they have | Nothing to do |
+| The form still shows social media fields | The frontend was built without `NEXT_PUBLIC_SOCIAL_AUDITS_ENABLED=false` | Rebuild the frontend |
 | Audits sit at `queued` | Worker down, or pointed at another broker | Check `docker compose ps`, worker logs |
 | Audit failed: "Its security check blocked our scanner" or "It refused our scanner (HTTP 403)" | The site's host (often SiteGround) has flagged the server's address, 173.255.206.170, and the Firecrawl fallback did not help: `FIRECRAWL_API_KEY` is empty, a cap is used up (`CRAWLER_FIRECRAWL_DAILY_LIMIT` audits a day, `CRAWLER_FIRECRAWL_MONTHLY_PAGE_LIMIT` pages a month), Firecrawl was blocked too, or Firecrawl failed | The worker log's `firecrawl_fallback` line names the outcome (`daily_limit_reached`, `monthly_limit_reached`, `still_blocked`, `service_error (HTTP 402)`, ...; caps and a 401/402 from Firecrawl log at WARNING); no line means the fallback is off. The lasting fix is the host's: SiteGround support must allow-list the address (Site Tools has no setting). `CRAWLER_CHALLENGE_WAIT_SECONDS` only sets how long the worker waits |
 | A report says its pages were "fetched through a rendering service" | Expected: the site's security blocked the server's browser, so the Firecrawl fallback fetched the pages | Nothing to do. Its site-health check sent nothing from this server (no sitemap or link checks), so it shows as limited by the bot check |
@@ -216,10 +220,11 @@ suspend the account — a business-risk decision the operator owns. Keep volume 
   without `CLERK_ISSUER`, so they never fall open.
 - **The teaser hides fixes; the database keeps them.** Backups and DB access expose everything.
 - **`.env` holds every secret** (`chmod 600`, never committed; `.env.bak.*` deserves the same care).
-  This edition reuses only two of the parent's keys, `GOOGLE_PSI_API_KEY` and `YOUTUBE_API_KEY`
-  (shared free quota); OpenAI, Apify and Places are not set here. `FIRECRAWL_API_KEY` (the
-  blocked-site fallback), when set, is this app's own: it is sent only to Firecrawl, over https,
-  in a header, and never logged.
+  This edition uses one of the parent's keys, `GOOGLE_PSI_API_KEY` (shared free quota). The
+  `YOUTUBE_API_KEY` copied with it at go-live is unused while social audits are off and can be
+  emptied; OpenAI, Apify and Places are not set here. `FIRECRAWL_API_KEY` (the blocked-site
+  fallback), when set, is this app's own: it is sent only to Firecrawl, over https, in a header,
+  and never logged.
 - **No Google OAuth tokens are stored** (Search Console is off).
 - **API keys never ride in URLs** and the HTTP client loggers are held at WARNING, so credentials
   don't reach the logs. `/docs`, `/redoc` and `/openapi.json` are disabled when

@@ -9,13 +9,14 @@ For how it works internally see [ARCHITECTURE.md](ARCHITECTURE.md); for how to u
 ## 1. What this is
 
 The Rick edition of Builder Lead Converter's website audit: a public site where a business owner
-pastes their website URL (optionally with Instagram / Facebook / YouTube links) and, without signing
-in, gets a branded **teaser** report. The system crawls the site, measures it, scores it against
-versioned YAML rubrics and renders a PDF (plus DOCX) — showing the problems and scores but none of
-the fixes, with a booking call-to-action ("Book a meeting with Rick") in their place. It is the
-parent tool (`blcdevelopment/blc-social-audit`) with three settings changed: `REPORT_PROFILE=teaser`,
-`PUBLIC_AUDITS_ENABLED=true` and `SEARCH_CONSOLE_ENABLED=false`; the code defaults reproduce the
-parent, where an internal operator gets the full report.
+pastes their website URL and, without signing in, gets a branded **teaser** report. The system
+crawls the site, measures it, scores it against versioned YAML rubrics and renders a PDF (plus
+DOCX) — showing the problems and scores but none of the fixes, with a booking call-to-action
+("Book a meeting with Rick") in their place. It is the parent tool
+(`blcdevelopment/blc-social-audit`) with four settings changed: `REPORT_PROFILE=teaser`,
+`PUBLIC_AUDITS_ENABLED=true`, `SEARCH_CONSOLE_ENABLED=false` and `SOCIAL_AUDITS_ENABLED=false` (no
+social media in the audit); the code defaults reproduce the parent, where an internal operator gets
+the full report.
 
 - **Audience of the report:** home builders, remodelers and local service businesses — the wording
   in `prompts/` and the rubric remediation text assumes that reader.
@@ -30,17 +31,22 @@ parent, where an internal operator gets the full report.
 | Type | Input | Produces | Status |
 |---|---|---|---|
 | `website` | URL | SEO, UX/UI and Lead-Gen Readiness scores + PDF/DOCX | The default path |
-| `combined` | URL **and** ≥1 social link | The website report with a **Social Media Audit** section and an **Overall Lead-Gen Readiness** score appended | The headline flow |
-| `social` | ≥1 social link (no URL) | A standalone Social Score + its own PDF (no DOCX) | Backend-only — the UI page was removed 2026-06-26; reachable via `POST /audits` only with public mode off (public mode answers 422) |
+| `combined` | URL **and** ≥1 social link | The website report with a **Social Media Audit** section and an **Overall Lead-Gen Readiness** score appended | Off in this edition (422); the parent's headline flow |
+| `social` | ≥1 social link (no URL) | A standalone Social Score + its own PDF (no DOCX) | Off in this edition (422). Backend-only — the UI page was removed 2026-06-26; reachable via `POST /audits` only with public mode off (public mode answers 422) |
 
 A job is exactly one type, but a `website` job **can be promoted to `combined` mid-run**: if the
 crawled site links to its own social profiles and a provider credential is configured, the social
 step runs, and promotion happens only when the collection actually returns usable data
 (`SOCIAL_AUTODISCOVERY_ENABLED`, default on).
 
+**In this edition only `website` audits run** (`SOCIAL_AUDITS_ENABLED=false`): the API refuses a
+`combined` or `social` request (422), and a website job is never promoted. Those two types are the
+parent's, kept in the code and switched off; audits completed before the switch keep theirs.
+
 **Scoring shape:** Lead-Gen Readiness = 0.45 × SEO + 0.55 × UX/UI (`rubrics/composite.yaml`).
-Overall Readiness = 0.70 × Lead-Gen + 0.30 × Social (`rubrics/overall.yaml`), and rescales to the
-website score alone when social produced nothing. Bands: ≥75 strong, ≥50 fair, <50 weak.
+Overall Readiness (combined audits only, so none in this edition) = 0.70 × Lead-Gen + 0.30 ×
+Social (`rubrics/overall.yaml`), and rescales to the website score alone when social produced
+nothing. Bands: ≥75 strong, ≥50 fair, <50 weak.
 
 ## 3. What each area evaluates
 
@@ -48,7 +54,7 @@ website score alone when social produced nothing. Bands: ≥75 strong, ≥50 fai
 |---|---|---|
 | **SEO** | Organic visibility | Meta titles/descriptions, heading structure, internal linking, schema, indexability, image alt coverage, the site-wide technical crawl, local-SEO signals, answer-engine structure, security, Core Web Vitals (Search Console facts are switched off in this edition) |
 | **UX/UI** | Conversion & lead capture | Value-proposition clarity, CTA visibility, lead forms (including popup and embedded), contact paths, trust signals, navigation, funnel friction |
-| **Social** | Audience growth & nurture | Bio optimisation and CTA clarity, posting cadence and consistency, engagement rate, content mix, link-in-bio funnel integration, cross-platform handle consistency |
+| **Social** | Audience growth & nurture | Bio optimisation and CTA clarity, posting cadence and consistency, engagement rate, content mix, link-in-bio funnel integration, cross-platform handle consistency (not evaluated in this edition: `SOCIAL_AUDITS_ENABLED=false`) |
 
 Every recommendation must serve one of two outcomes: **attract more qualified traffic**, or
 **convert traffic into leads**. The **full** report carries an executive summary, findings per area
@@ -90,9 +96,9 @@ and **polish** (the PDF is presentable to a prospect, not a dev artifact).
   UX/UI scored rules → deterministic findings → grounding check → branded PDF/DOCX, shaped by the
   report profile (full or teaser).
 - **Social audit:** Instagram + Facebook via Apify actors, YouTube via the free Data API v3 — public
-  data only, no login. 20 scored rules.
+  data only, no login. 20 scored rules. Off in this edition (`SOCIAL_AUDITS_ENABLED=false`).
 - **Combined audit** with Google Business Profile enrichment (Places API) and a tri-way website ↔
-  social ↔ GBP phone (NAP) check.
+  social ↔ GBP phone (NAP) check. Off in this edition (`SOCIAL_AUDITS_ENABLED=false`).
 - **AI Visibility:** how the brand appears in AI answers, read from the Semrush AI Visibility
   Toolkit by a saved-session browser bot + an OpenAI vision pass. Presentation-only, never scored.
   Auto-runs on every website/combined audit when enabled (`AI_VISIBILITY_ENABLED`, default off)

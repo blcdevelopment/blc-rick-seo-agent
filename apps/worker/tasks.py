@@ -10,7 +10,7 @@ from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy.orm import Session
 
 from apps.shared.audit_states import AuditStatus
-from apps.shared.config import Settings, get_settings
+from apps.shared.config import SOCIAL_AUDITS_DISABLED_MESSAGE, Settings, get_settings
 from apps.shared.database import SessionLocal
 from apps.shared.models import AuditJob, AuditResult
 from apps.worker.celery_app import celery_app
@@ -401,6 +401,18 @@ def _run_social_pipeline(
     settings: Settings,
     social_collector: SocialCollectorFunc,
 ) -> None:
+    if not settings.social_audits_enabled:
+        # A social-only job queued before social audits were switched off: there is nothing to
+        # audit without them, so it fails plainly before any provider is called.
+        _mark_job(
+            db,
+            job,
+            AuditStatus.FAILED,
+            "Social media audits are off",
+            job.progress_pct or 0,
+            SOCIAL_AUDITS_DISABLED_MESSAGE,
+        )
+        return
     _mark_job(db, job, AuditStatus.CRAWLING, "Collecting social profiles", 40)
     social_facts = social_collector(settings, job.social_handles)
     if social_facts.get("status") in {"complete", "partial"}:
@@ -591,7 +603,12 @@ def _augment_with_social(
     social_score, social_facts, and the ``social`` / ``overall_readiness`` keys; the existing
     RENDERING stage then produces ONE combined PDF (compose_report_payload appends the sections
     when it sees this data). Social findings here are deterministic (no LLM). Handles are passed
-    in (not re-read off ``job``) so the data flow doesn't depend on a DB refresh landing first."""
+    in (not re-read off ``job``) so the data flow doesn't depend on a DB refresh landing first.
+
+    A no-op while ``social_audits_enabled`` is off (the caller skips it too): nothing is
+    collected, written or marked."""
+    if not settings.social_audits_enabled:
+        return
     _mark_job(db, job, AuditStatus.RENDERING, "Auditing social profiles", 96)
     # Graceful degradation: the social add-on must never sink an already-scored, already-committed
     # website audit. ALL the fallible work — network collect, rubric load, scoring, the merge
@@ -865,7 +882,26 @@ def run_collection_audit(
             # INSIDE _augment_with_social, only after the collection actually returned usable
             # data — a website audit that links to no profiles, has no provider credential, or
             # whose collection comes back empty stays byte-identical to before.
-            effective_handles = _resolve_social_handles_safely(job, crawl_result, settings)
+            # With social audits switched off there is no social step for any job: no link
+            # discovery and no collection, even for a combined job queued before the switch with
+            # typed handles (they stay stored, unused), so the report stays website-only.
+            if not settings.social_audits_enabled and (
+                result.social_score is not None or result.social_facts
+            ):
+                # A task redelivered after its worker was lost across the deploy that switched
+                # social audits off can find the social data its first attempt merged (at 96%)
+                # before dying; the website upsert above does not touch it. Drop it, or the
+                # report would still show a social section. An audit completed before the switch
+                # never reaches this line (the COMPLETE return above) and keeps its own.
+                result.social_score = None
+                result.social_facts = None
+                db.commit()
+                db.refresh(result)
+            effective_handles = (
+                _resolve_social_handles_safely(job, crawl_result, settings)
+                if settings.social_audits_enabled
+                else {}
+            )
             already_combined = (job.audit_type or "website") == "combined"
             if effective_handles and (
                 already_combined or _has_usable_social_credential(effective_handles, settings)

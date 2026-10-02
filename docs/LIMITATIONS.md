@@ -15,6 +15,13 @@ Out-of-scope decisions and the open backlog now live in [PRODUCT.md](PRODUCT.md)
 object storage, no live benchmarking vendor). The caveats below are about the features that *do*
 exist.
 
+**Social media audits are switched off in this edition** (`SOCIAL_AUDITS_ENABLED=false`, UI build
+flag `NEXT_PUBLIC_SOCIAL_AUDITS_ENABLED=false`). No new audit has a social part: the API refuses
+social handles (422), and the worker never discovers social links or calls Apify, YouTube or Google
+Places. The social caveats below (the rest of this section and §1.1) describe the code the edition
+keeps from the parent, switched off, and apply here only to audits completed before the switch,
+which keep what they have.
+
 **Social data is public-scrape data.** Facebook engagement has no reach/impressions denominator
 because the public page gives none — only an owner-consent Meta Graph integration would fix that,
 and that integration is not built (it needs Meta App Review and Business Verification). Instagram
@@ -38,6 +45,9 @@ one report (PDF and DOCX). Known limits of that flow:
   it a `combined` audit). The backend `audit_type="social"` still exists and past social-only
   audits still render in history/detail — but you can't start a new social-only run without a URL
   through the UI, and in public mode (`PUBLIC_AUDITS_ENABLED`) the API refuses one too (422).
+  With `SOCIAL_AUDITS_ENABLED=false` (this edition) the form has no social fields at all, the API
+  refuses any request carrying social handles (422), and a social-only job queued before the
+  switch fails with "Social media audits are not available here."
 - **The combined report needs `rubrics/overall.yaml` deployed.** Overall Lead-Gen Readiness is
   config-driven (`compose_overall_readiness_score`). If `overall.yaml` is missing/unreadable or a
   provider returns bad data, the social/overall step is caught and the audit **gracefully degrades
@@ -94,11 +104,11 @@ one report (PDF and DOCX). Known limits of that flow:
   starts (`deploy/edge/rick-edge.conf`: per visitor a burst of 3, then 1 a minute; everyone
   together 20, then 10 a minute; 429 over that). One anonymous submission runs a Playwright crawl (up to
   `CRAWLER_MAX_PAGES`, default 10), a site-health sweep (up to 150 internal + 50 outbound URL
-  checks), PageSpeed calls, and — when the site links its social profiles or the visitor adds them
-  — Apify / YouTube / Google Places calls, plus a Semrush page load and a paid vision call when AI
-  Visibility is on. All of it runs on one worker, one audit at a time (a real site takes ~8–10
-  minutes), and on API keys shared with the parent app, so a flood both delays every visitor and
-  spends the parent's quota.
+  checks) and PageSpeed calls, plus a Semrush page load and a paid vision call when AI Visibility
+  is on. Social audits are off here, so no Apify / YouTube / Google Places call is ever made, even
+  when the site links its social profiles. All of it runs on one worker, one audit at a time (a
+  real site takes ~8–10 minutes), and on API keys shared with the parent app, so a flood both
+  delays every visitor and spends the parent's quota.
 - **A public report's URL is its only key.** Anyone with an `/audit/<id>` link (a random UUID)
   can read that report. Unlike a share link it never expires and cannot be revoked, and audit rows
   are never pruned (§8).
@@ -275,9 +285,9 @@ one report (PDF and DOCX). Known limits of that flow:
   Two OpenAI paths *are* live when `OPENAI_API_KEY` is set: the **standalone social audit**
   polishes its rule-derived findings (`prompts/commentary_social_*.md`, grounded, deterministic
   fallback on any failure), and **AI Visibility** reads the Semrush dashboard with a vision model
-  (§9). Neither changes a score. Under the teaser profile the social polish still runs and is
-  billed, but its prose is discarded at render; public mode refuses social-only audits, so in this
-  edition it runs only for social audits created with public mode off.
+  (§9). Neither changes a score. In this edition social audits are off
+  (`SOCIAL_AUDITS_ENABLED=false`), so the social polish never runs. With them on, under the teaser
+  profile it still runs and is billed, but its prose is discarded at render.
 - The **grounding validator strips unsupported _numeric_ claims** by comparing
   numbers in the commentary against extracted facts (timeframe phrases such as
   "1–3 months" are masked first so they survive). If stripping would empty a field
