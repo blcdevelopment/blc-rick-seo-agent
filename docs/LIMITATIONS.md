@@ -181,7 +181,11 @@ one report (PDF and DOCX). Known limits of that flow:
     run), so broken links are not checked on such a site;
   - the report's "Page coverage" (PDF), its header (DOCX) and the web page say the pages were
     fetched through a rendering service; the crawl JSON stores `fetched_via: "firecrawl"` and
-    what blocked the browser.
+    what blocked the browser;
+  - when Firecrawl itself refuses the homepage (its own rate limit, HTTP 429, or the plan's
+    credits running out, HTTP 402), the visitor sees the same "security check blocked our
+    scanner" message as a site that blocks us, with no retry; the worker log's
+    `firecrawl_fallback` line (WARNING for 401/402) says which it was.
 - **Form detection errs toward credit (accepted tradeoff, 2026-07-03).** Popup/embedded
   lead forms are detected via provider signatures matched anywhere in the page HTML and a
   bounded runtime frame pass, so (a) a page merely *mentioning* a form provider (e.g. a blog
