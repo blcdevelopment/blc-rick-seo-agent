@@ -133,6 +133,7 @@ tests and the QA harness run.
 ## Contributing
 
 Work on a branch and open a PR — `pre-commit` (ruff, isort, flake8, the full pytest suite, and the
-frontend typecheck when UI files change) runs on every commit and again in CI. Merging to `main`
-does **not** deploy by itself: after the merge, run **Actions → Deploy → Run workflow** on `main`
-([DEPLOYMENT.md](DEPLOYMENT.md), Part 2).
+frontend typecheck when UI files change) runs on every commit and again in CI. Merging a PR to
+`main` **deploys it** (since 15 October 2026), unless it changes only Markdown or `docs/`; for those,
+or to redeploy, run **Actions → Deploy → Run workflow** on `main` ([DEPLOYMENT.md](DEPLOYMENT.md),
+Part 2).

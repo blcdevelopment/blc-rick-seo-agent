@@ -372,13 +372,21 @@ docker compose -p blc-rick-seo-agent -f docker-compose.prod.yml up -d --force-re
 
 ### 2.4 How it deploys
 
-- **Trigger: manual.** Merge the pull request (merge commits only), then run **Actions → Deploy →
-  Run workflow** on `main`. A merge alone deploys nothing:
-  [deploy.yml](.github/workflows/deploy.yml) has only `workflow_dispatch`.
+- **Trigger: a reviewed merge to `main`, automatically** (since 15 October 2026), like blc-board,
+  blc-ep and blc-dr. [deploy.yml](.github/workflows/deploy.yml) runs on `push` to `main` and on
+  `workflow_dispatch`:
+  - a merge that changes **only** Markdown files or `docs/` deploys nothing (`paths-ignore`): a
+    deploy rebuilds and restarts api, worker and frontend even for unchanged code, and would cut off
+    a running audit;
+  - **Actions → Deploy → Run workflow** on `main` still deploys by hand (after a docs-only merge, or
+    to redeploy);
+  - a direct push to `main` is refused by the release gate before anything is built.
+  - Part 1, 1.5 still lists seo as manual: Part 1 changes only in all six repositories together.
 - **Last deploy:** Actions → Deploy on `main`, 2 October 2026 08:27 UTC, success, commit `c4d2fd3`
   (PR #8). The box's checkout is at that commit.
 - **Gates, in order:**
-  1. `Require main` fails on any ref but `refs/heads/main`.
+  1. `Require main and a reviewed merge` fails on any ref but `refs/heads/main`, and, for a push,
+     on a commit with fewer than two parents (a direct push rather than a merged PR).
   2. `Checks on the exact commit` runs [pre-commit.yml](.github/workflows/pre-commit.yml): every
      pre-commit hook, including the full pytest suite and the frontend typecheck.
   3. `Deploy to the shared Linode` (environment `production`, concurrency group
@@ -386,7 +394,8 @@ docker compose -p blc-rick-seo-agent -f docker-compose.prod.yml up -d --force-re
      `RICK_DEPLOY_*` secrets and the pinned host key, and streams the committed
      `deploy/deploy.sh` to `bash -s -- <commit>` on the box.
   - Separately, `protect-main.yml` fails on any direct (non-merge) push to `main`. It runs after
-    the push, so it flags one but cannot stop it. Its comment calls branch protection the real
+    the push, so it flags one but cannot stop it; since 15 October the deploy's own gate refuses to
+    deploy one. Its comment calls branch protection the real
     guard, but Part 1, 1.5 found none on `main` on 29 September, and GitHub still reports `protected=false` on 15 October.
     It passed on PR #8's merge (2 October, 08:26 UTC).
 - **What [deploy/deploy.sh](deploy/deploy.sh) does:** lock → refuse if anything is missing or a
@@ -782,9 +791,9 @@ uses port 22.
 | `RICK_DEPLOY_KNOWN_HOSTS` | the pinned `ssh-keyscan 173.255.206.170` line the siblings use |
 | `RICK_DEPLOY_PORT` | `22` (optional) |
 
-From then on, merge a PR and run **Actions → Deploy → Run workflow** on `main`. Adding
-`push: branches: [main]` under `on:` in [deploy.yml](.github/workflows/deploy.yml) would make it
-automatic. That has not been done: deploys are still manual.
+From then on, merge a PR and run **Actions → Deploy → Run workflow** on `main`. On 15 October 2026
+[deploy.yml](.github/workflows/deploy.yml) gained `push: branches: [main]` (with a `paths-ignore` for
+Markdown and `docs/`, and a merge-commit gate), so a reviewed merge now deploys by itself (2.4).
 
 ### Step 9 — Cron jobs: storage cleanup only
 

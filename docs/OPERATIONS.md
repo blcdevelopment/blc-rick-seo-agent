@@ -60,7 +60,7 @@ This decides whether a change needs a **rebuild** or just a **recreate**.
 | `BOOKING_URL` / `BOOKING_CTA_LABEL` in `.env` | `up -d --force-recreate api worker` | No |
 | `REPORT_PROFILE` / `PUBLIC_AUDITS_ENABLED` / `SEARCH_CONSOLE_ENABLED` / `SOCIAL_AUDITS_ENABLED` | edit them in `docker-compose.prod.yml` (a code change), then recreate **both** api and worker; `SOCIAL_AUDITS_ENABLED` also has a UI copy (next row) | No |
 | `NEXT_PUBLIC_*` | `up -d --build frontend` | Yes (frontend) |
-| Application code | merge the PR, then **Actions → Deploy → Run workflow** ([DEPLOYMENT.md](../DEPLOYMENT.md) Part 2) | Yes |
+| Application code | merge the PR: the merge deploys it ([DEPLOYMENT.md](../DEPLOYMENT.md) Part 2) | Yes |
 
 A PDF or DOCX is rendered once, when its audit completes: a changed call-to-action or profile shows
 up in new reports and on the web page immediately, but existing files keep the old one.
@@ -83,7 +83,9 @@ only the connection string; rotating it is a separate `ALTER ROLE`.
 
 ## 3. Deploying
 
-Merge the pull request, then **Actions → Deploy → Run workflow** on `main`. On the box by hand:
+Merge the pull request: a merge commit on `main` deploys by itself (since 15 October 2026), unless
+the merge changes only Markdown or `docs/`. To deploy anyway, or to redeploy, run **Actions → Deploy
+→ Run workflow** on `main`. On the box by hand:
 `cd ~/blc-rick-seo-agent && git fetch origin && bash deploy/deploy.sh "$(git rev-parse origin/main)"`.
 - The script builds the images one at a time and backs the database up before migrations.
 - A failed build leaves the running containers untouched.

@@ -109,7 +109,8 @@ and **polish** (the PDF is presentable to a prospect, not a dev artifact).
   refresh, audit history — remain API endpoints for Clerk-authenticated or local use and are hidden
   in the public build.
 - **Ops:** production compose for the parent's shared Linode box at seo.builderleadconverter.com,
-  behind an nginx edge proxy with audit-start rate limits; a manual deploy workflow and script
+  behind an nginx edge proxy with audit-start rate limits; a deploy workflow (automatic on each
+  reviewed merge to `main`, docs-only merges excepted) and script
   ([DEPLOYMENT.md](../DEPLOYMENT.md)); optional Sentry, gated `/metrics`, cron storage retention,
   and a database dump before each deploy (no nightly backup).
 - **Off by default but built:** competitor-benchmarking seam (no vendor client), advisory axe-core
