@@ -5,10 +5,11 @@ name: Deploy
 # over SSH with the exact commit, and the box builds and starts only this stack
 # (DEPLOYMENT.md §5).
 #
-# Manual for now: Actions -> Deploy -> Run workflow, on main. A merge deploys nothing until the
-# box, its .env and the secrets below exist, or every merge would end in a failed job. Once the
-# first manual deploy is healthy, adding `push: branches: [main]` under `on:` makes it
-# automatic.
+# Automatic since 15 Oct 2026: a reviewed merge commit on main deploys, like blc-board, blc-ep and
+# blc-dr. A merge that only touches Markdown or docs/ deploys nothing (a deploy rebuilds and
+# restarts api, worker and frontend even when the code is unchanged, and would cut off a running
+# audit). A direct push to main is refused by the release gate. Actions -> Deploy -> Run workflow
+# on main still deploys by hand (for a docs-only merge, or a redeploy).
 #
 # This repository is public. GitHub never passes secrets to pull requests from forks, and only
 # people with write access can run this workflow. The secrets are named RICK_DEPLOY_* so that
@@ -22,6 +23,11 @@ name: Deploy
 #   RICK_DEPLOY_PORT         optional SSH port (defaults to 22)
 
 on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
   workflow_dispatch: {}
 
 concurrency:
@@ -33,7 +39,7 @@ permissions:
 
 jobs:
   release-gate:
-    name: Require main
+    name: Require main and a reviewed merge
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -45,6 +51,27 @@ jobs:
             echo "::error::Deploy from main only (this run is on $REF)."
             exit 1
           fi
+
+      - name: Check out the commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Refuse a direct push (a push must be a reviewed merge commit)
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "Manual deploy, started from Actions by someone with write access."
+            exit 0
+          fi
+          parent_count="$(git cat-file -p "$GITHUB_SHA" | grep -c '^parent ' || true)"
+          if [ "$parent_count" -lt 2 ]; then
+            echo "::error::Deploy blocked: main must be updated with a reviewed merge commit, not a direct push."
+            exit 1
+          fi
+          echo "Reviewed merge commit verified."
 
   checks:
     name: Checks on the exact commit
