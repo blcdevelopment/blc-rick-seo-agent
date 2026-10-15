@@ -267,8 +267,9 @@ docker inspect --format '{{.Name}} restarts={{.RestartCount}} oom={{.State.OOMKi
 
 > **Verified on the live server on 15 October 2026** (read-only: containers, deployed commit, settings names, health, backups/cron).
 >
-> The box runs `main` at `c4d2fd3` (the merge of PR #8), put there by the last **Deploy** run
-> (2 October 2026 08:27 UTC, success). The rest comes from the code at that commit, the
+> The box runs what the last **Deploy** run shipped. On 15 October 2026 that was `7a18d85` (PR #10,
+> the first automatic deploy, 05:48 UTC, success: the app code of `c4d2fd3` plus the new deploy
+> trigger). The rest comes from the code at that commit, the
 > 29 September go-live record (§9) and the dated checks since; anything about the box today that
 > could not be checked is marked (unverified).
 > This part is the short version. The numbered sections §1-§9 of this file hold the detail, and
@@ -382,8 +383,9 @@ docker compose -p blc-rick-seo-agent -f docker-compose.prod.yml up -d --force-re
     to redeploy);
   - a direct push to `main` is refused by the release gate before anything is built.
   - Part 1, 1.5 still lists seo as manual: Part 1 changes only in all six repositories together.
-- **Last deploy:** Actions → Deploy on `main`, 2 October 2026 08:27 UTC, success, commit `c4d2fd3`
-  (PR #8). The box's checkout is at that commit.
+- **Last deploy (15 October 2026):** Actions → Deploy on `main` at 05:48 UTC, started by the merge of
+  PR #10 (the first automatic deploy), success, commit `7a18d85`. The one before it was by hand:
+  2 October 08:27 UTC, `c4d2fd3` (PR #8).
 - **Gates, in order:**
   1. `Require main and a reviewed merge` fails on any ref but `refs/heads/main`, and, for a push,
      on a commit with fewer than two parents (a direct push rather than a merged PR).
@@ -478,8 +480,9 @@ tail -n 20 ~/backups/rick-cleanup.log                                # the night
   `~/backups/blc-rick-seo-agent/<database>-<UTC time>-before-<commit>.sql.gz`, in a folder with
   mode 700.
   - The first one: `blc_rick_seo_agent-20260929T155349Z-before-8719e4a24525.sql.gz`. Each later
-    deploy added one: on 15 October there were 5, the last
-    `blc_rick_seo_agent-20261002T083046Z-before-c4d2fd3f20b7.sql.gz` (before the c4d2fd3 deploy).
+    deploy added one: on 15 October there were 6, the last
+    `blc_rick_seo_agent-20261015T055216Z-before-7a18d853cd27.sql.gz` (before the first automatic
+    deploy).
   - Nothing prunes these; delete old ones by hand.
   - They hold every fix the teaser hides. Keep them on the box.
 - **Report files** (PDF, DOCX, screenshots, on `blc-rick-seo-agent_storage`) are not backed up.
