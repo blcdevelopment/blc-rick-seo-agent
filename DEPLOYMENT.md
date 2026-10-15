@@ -265,14 +265,20 @@ docker inspect --format '{{.Name}} restarts={{.RestartCount}} oom={{.State.OOMKi
 
 ## Part 2 — blc-rick-seo-agent: how this app runs and deploys
 
-> Checked against `origin/main` (`8719e4a`) and the live server on 29 September 2026. This part is
-> the short version. The numbered sections §1-§9 of this file hold the detail, and
+> **Verified on the live server on 15 October 2026** (read-only: containers, deployed commit, settings names, health, backups/cron).
+>
+> The box runs `main` at `c4d2fd3` (the merge of PR #8), put there by the last **Deploy** run
+> (2 October 2026 08:27 UTC, success). The rest comes from the code at that commit, the
+> 29 September go-live record (§9) and the dated checks since; anything about the box today that
+> could not be checked is marked (unverified).
+> This part is the short version. The numbered sections §1-§9 of this file hold the detail, and
 > [docs/OPERATIONS.md](docs/OPERATIONS.md) is the day-2 runbook.
 
 ### 2.1 What it is
 
 - The public website audit, Rick edition, at **https://seo.builderleadconverter.com**. Live since
-  2026-09-29 15:42 UTC.
+  2026-09-29 15:42 UTC, first at `8719e4a`. PRs #4-#8 have gone live since: the BLC favicon, the
+  bot-check handling and the Firecrawl fallback (2.8, gotcha 10), and social media switched off.
 - A separate copy of `blc-social-audit` (the ai app) with four switches changed:
   `REPORT_PROFILE=teaser`, `PUBLIC_AUDITS_ENABLED=true`, `SEARCH_CONSOLE_ENABLED=false` and
   `SOCIAL_AUDITS_ENABLED=false`.
@@ -283,8 +289,8 @@ docker inspect --format '{{.Name}} restarts={{.RestartCount}} oom={{.State.OOMKi
     profiles, and the report has no social section or social score. Audits finished before the
     switch keep what they have.
 - With the other apps it shares only the server, the ai app's Caddy, the `blc-edge` network, the
-  deploy lock and the ai app's Google PageSpeed key (its YouTube key was copied too, and is unused
-  while social audits are off). Its database, Redis, volumes and compose project are its own.
+  deploy lock and the ai app's Google PageSpeed key (the YouTube key copied with it at go-live has
+  since been emptied). Its database, Redis, volumes, compose project and Firecrawl key are its own.
 - This repository is public. Secrets live only in the box's `.env`.
 
 ### 2.2 Where and how it runs
@@ -306,36 +312,44 @@ docker inspect --format '{{.Name}} restarts={{.RestartCount}} oom={{.State.OOMKi
 | `blc-rick-seo-agent-postgres-1` | PostgreSQL 16 | `postgres:5432` | 256m | 300 |
 | `blc-rick-seo-agent-redis-1` | Redis 7: Celery broker and results | `redis:6379` | 128m | 300 |
 
-- All six restart `unless-stopped`.
+- All six restart `unless-stopped`. When the box rebooted on 12 October 2026 (06:28 UTC), all six
+  came back by themselves within about a minute.
+- On 15 October all six were up: five `(healthy)`, and the worker, which has no health check,
+  `Up`. None had restarted or been OOM-killed. Images: `blc-rick-seo-agent-api`, `-worker` and
+  `-frontend`, built on the box.
 - On `blc-edge` this app answers only to `rick-edge` and `blc-rick-edge`. Every other name above
   exists only on the project network. Why: Part 1, 1.3, and §2.
 - The ceilings are `.env` values (`RICK_*_MEM_LIMIT`, `RICK_API_CPUS`, `RICK_WORKER_CPUS`; §7).
+  None is set in the box's `.env`, so all run at the defaults above. The memory limits were read
+  from Docker on 15 October; the CPU limits and OOM scores come from the compose file and were not
+  read on the box (unverified).
 - The request path is drawn in §1; the edge's routes and rate limits are in
   [deploy/edge/rick-edge.conf](deploy/edge/rick-edge.conf).
 
 ### 2.3 Settings
 
-- **The file:** `~/blc-rick-seo-agent/.env`, chmod 600, never in git, made from
-  [deploy/production.env.example](deploy/production.env.example). Compose reads it for the
-  `${...}` values and hands it to the api and the worker. The frontend never sees it.
-- **What the box's `.env` holds (names only):**
+- **The file:** `~/blc-rick-seo-agent/.env`, chmod 600 (checked 15 October 2026),
+  never in git, made from [deploy/production.env.example](deploy/production.env.example). Compose
+  reads it for the `${...}` values and hands it to the api and the worker. The frontend never sees
+  it: compose would pass it only `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` and `CLERK_SECRET_KEY`, and
+  neither is in the box's `.env`.
+- **What the box's `.env` holds** (names checked on 15 October; the values shown are the ones set
+  at go-live and were not read again):
   - set: `POSTGRES_DB=blc_rick_seo_agent`, `POSTGRES_USER=blc`, `POSTGRES_PASSWORD` (its own random
-    value), `BOOKING_URL`, `BOOKING_CTA_LABEL`, `GOOGLE_PSI_API_KEY` and `YOUTUBE_API_KEY` (the ai
-    app's keys, copied from `~/blc-social-audit/.env`), `AI_VISIBILITY_ENABLED=false`,
-    `STORAGE_RETENTION_DAYS=90`. `YOUTUBE_API_KEY` is unused while social audits are off and can
-    be emptied;
-  - empty: `OPENAI_API_KEY`, `APIFY_API_TOKEN`, `GOOGLE_PLACES_API_KEY`, `CLERK_ISSUER`,
-    `CLERK_AUTHORIZED_PARTIES`, `CLERK_ALLOWED_SUBJECTS`, `SENTRY_DSN`, `ALERT_WEBHOOK_URL`; no
-    Semrush values;
-  - to add with the release that brings the blocked-site fallback: `FIRECRAWL_API_KEY` (this
-    app's own key, on Firecrawl's free plan: 1,000 credits a month, one per page). Until it is
-    set the fallback is off (gotcha 10 in 2.8). Its caps have code defaults that fit that plan and
-    need no entry: `CRAWLER_FIRECRAWL_MAX_PAGES` (8 pages an audit),
-    `CRAWLER_FIRECRAWL_DAILY_LIMIT` (10 audits, so at most 80 credits, a UTC day) and
-    `CRAWLER_FIRECRAWL_MONTHLY_PAGE_LIMIT` (900 credits a UTC month, 100 left for manual
-    checks). The worker reads `.env` through `env_file`, so no compose change is needed;
-  - the `RICK_*` ceilings are at their defaults, and `RICK_DOMAIN` is unset (it exists only for
-    rehearsals on another hostname).
+    value), `BOOKING_URL`, `BOOKING_CTA_LABEL`, `GOOGLE_PSI_API_KEY` (the ai app's key, copied from
+    `~/blc-social-audit/.env`), `AI_VISIBILITY_ENABLED=false`, `SENTRY_TRACES_SAMPLE_RATE` (no
+    effect while `SENTRY_DSN` is empty), `STORAGE_RETENTION_DAYS=90`;
+  - set since 2 October: `FIRECRAWL_API_KEY`, this app's own key, on Firecrawl's free plan
+    (1,000 credits a month, one per page; unverified). It turns the blocked-site fallback on
+    (gotcha 10 in 2.8). Its caps are not in `.env`, so they run at their code defaults, which fit
+    that plan: `CRAWLER_FIRECRAWL_MAX_PAGES` (8 pages an audit), `CRAWLER_FIRECRAWL_DAILY_LIMIT`
+    (10 audits, so at most 80 credits, a UTC day) and `CRAWLER_FIRECRAWL_MONTHLY_PAGE_LIMIT`
+    (900 credits a UTC month, 100 left for manual checks);
+  - empty: `OPENAI_API_KEY`, `APIFY_API_TOKEN`, `YOUTUBE_API_KEY` (the ai app's key at go-live,
+    emptied since social audits were switched off), `GOOGLE_PLACES_API_KEY`, `CLERK_ISSUER`,
+    `CLERK_AUTHORIZED_PARTIES`, `CLERK_ALLOWED_SUBJECTS`, `SENTRY_DSN`, `ALERT_WEBHOOK_URL`;
+  - absent: Semrush values, every `RICK_*` ceiling (so all are at their defaults) and
+    `RICK_DOMAIN` (it exists only for rehearsals on another hostname).
 - **Set by compose, whatever `.env` says:**
   - api and worker: `APP_ENV=production`; `DATABASE_URL`, built from the `POSTGRES_*` values with
     host `postgres`; `REDIS_URL`, `CELERY_BROKER_URL` and `CELERY_RESULT_BACKEND`
@@ -361,6 +375,8 @@ docker compose -p blc-rick-seo-agent -f docker-compose.prod.yml up -d --force-re
 - **Trigger: manual.** Merge the pull request (merge commits only), then run **Actions → Deploy →
   Run workflow** on `main`. A merge alone deploys nothing:
   [deploy.yml](.github/workflows/deploy.yml) has only `workflow_dispatch`.
+- **Last deploy:** Actions → Deploy on `main`, 2 October 2026 08:27 UTC, success, commit `c4d2fd3`
+  (PR #8). The box's checkout is at that commit.
 - **Gates, in order:**
   1. `Require main` fails on any ref but `refs/heads/main`.
   2. `Checks on the exact commit` runs [pre-commit.yml](.github/workflows/pre-commit.yml): every
@@ -369,7 +385,10 @@ docker compose -p blc-rick-seo-agent -f docker-compose.prod.yml up -d --force-re
      `deploy-rick-seo-agent`, never cancelled, 75-minute timeout) connects with the
      `RICK_DEPLOY_*` secrets and the pinned host key, and streams the committed
      `deploy/deploy.sh` to `bash -s -- <commit>` on the box.
-  - Separately, `protect-main.yml` fails on any direct (non-merge) push to `main`.
+  - Separately, `protect-main.yml` fails on any direct (non-merge) push to `main`. It runs after
+    the push, so it flags one but cannot stop it. Its comment calls branch protection the real
+    guard, but Part 1, 1.5 found none on `main` on 29 September, and GitHub still reports `protected=false` on 15 October.
+    It passed on PR #8's merge (2 October, 08:26 UTC).
 - **What [deploy/deploy.sh](deploy/deploy.sh) does:** lock → refuse if anything is missing or a
   tracked file was edited → fast-forward `main` → plan and name checks for `blc-edge` → `nginx -t`
   → memory, disk and port 5901 checks → tag `:rollback` → database dump → build api, worker and
@@ -405,7 +424,8 @@ Put `BLC_RICK_SKIP_PUBLIC_CHECK=1` in front only when the public route does not 
 - **A release that deployed fine but misbehaves:** revert its pull request, merge the revert, and
   run the Deploy workflow. The script only fast-forwards, so it cannot deploy an older commit.
 - **Taking the site offline at once**, keeping all data: stop the edge. Caddy then answers 502 for
-  `seo`, and the other sites carry on.
+  `seo`, and the other sites carry on. Because of `unless-stopped`, a stopped edge stays stopped
+  through a reboot until it is started again.
 
 ```bash
 cd ~/blc-rick-seo-agent
@@ -443,16 +463,20 @@ tail -n 20 ~/backups/rick-cleanup.log                                # the night
 
 ### 2.7 Backups and data
 
-- **No nightly backup.** This app's reports are treated as disposable (Part 1, 1.6).
+- **No nightly backup.** This app's reports are treated as disposable (Part 1, 1.6). The
+  crontab still had no backup line for it on 15 October.
 - **Before every deploy**, `deploy.sh` dumps the database (when postgres is running) to
   `~/backups/blc-rick-seo-agent/<database>-<UTC time>-before-<commit>.sql.gz`, in a folder with
   mode 700.
-  - The first one: `blc_rick_seo_agent-20260929T155349Z-before-8719e4a24525.sql.gz`.
+  - The first one: `blc_rick_seo_agent-20260929T155349Z-before-8719e4a24525.sql.gz`. Each later
+    deploy added one: on 15 October there were 5, the last
+    `blc_rick_seo_agent-20261002T083046Z-before-c4d2fd3f20b7.sql.gz` (before the c4d2fd3 deploy).
   - Nothing prunes these; delete old ones by hand.
   - They hold every fix the teaser hides. Keep them on the box.
 - **Report files** (PDF, DOCX, screenshots, on `blc-rick-seo-agent_storage`) are not backed up.
-  The 03:15 UTC cron job deletes those older than `STORAGE_RETENTION_DAYS` (90). Audit rows are
-  never deleted: an old report's PDF then answers 404, and its DOCX is rebuilt on request
+  The 03:15 UTC cron job (in `abdullah`'s crontab on 15 October, logging to
+  `~/backups/rick-cleanup.log`) deletes those older than `STORAGE_RETENTION_DAYS` (90). Audit
+  rows are never deleted: an old report's PDF then answers 404, and its DOCX is rebuilt on request
   ([docs/LIMITATIONS.md](docs/LIMITATIONS.md) §8).
 
 To restore a dump (the standard `pg_dump` restore; not yet rehearsed on this app):
@@ -489,32 +513,37 @@ docker compose -p blc-rick-seo-agent -f docker-compose.prod.yml start api worker
 7. **Changing `POSTGRES_PASSWORD` in `.env` does not change the database password** once the
    volume exists ([docs/OPERATIONS.md](docs/OPERATIONS.md) §2).
 8. **The Google PageSpeed key is the ai app's.** If it is rotated there, update this `.env` too,
-   then recreate the api and the worker. The YouTube key copied with it is unused while social
-   audits are off.
+   then recreate the api and the worker. The YouTube key copied with it at go-live has since been
+   emptied.
 9. **The route lives in another repository:** the `seo` block in `blc-social-audit/Caddyfile`.
 10. **Sites behind a bot check (SiteGround, Cloudflare).** The worker waits up to
     `CRAWLER_CHALLENGE_WAIT_SECONDS` (default 15) for the site's own check to let it through. If
     the check does not clear, or the site refuses the server (for example HTTP 403), the audit fails
-    with a plain message instead of scoring the check page. At this worker's 1 CPU, SiteGround's
-    check often gives up first, so SiteGround sites that have flagged this server usually end with
-    that message.
-    - **The Firecrawl fallback** (when `FIRECRAWL_API_KEY` is set): only when the homepage itself
-      is blocked that way, the worker fetches the pages through Firecrawl (its own addresses,
-      standard mode, no CAPTCHA solving) and the audit goes on from the real pages. The report's
-      "Page coverage" and the web page say the pages were fetched through a rendering service.
-      Caps (2.3), counted in this stack's Redis before anything is sent: 8 pages an audit, 10
-      audits a UTC day, 900 pages (credits) a UTC month. Past a cap, or if Firecrawl is shown the
-      check too or answers the homepage with anything but a page (HTTP 200), the audit fails with
-      the same plain message. Every other site is crawled as before. Each fallback audit logs one
-      `firecrawl_fallback` line in the worker log (outcome and page count, never the key); a cap
-      that stopped it, or Firecrawl refusing the key (401) or out of credits (402), logs it as a
-      WARNING.
+    with a plain message instead of scoring the check page, unless the Firecrawl fallback below
+    takes over. At this worker's 1 CPU, SiteGround's check often gives up first, so SiteGround
+    sites that have flagged this server usually go to the fallback.
+    - **The Firecrawl fallback** (on since 2 October: `FIRECRAWL_API_KEY` is set on the box):
+      only when the homepage itself is blocked that way, the worker fetches the pages through
+      Firecrawl (its own addresses, standard mode, no CAPTCHA solving) and the audit goes on from
+      the real pages. The report's "Page coverage" and the web page say the pages were fetched
+      through a rendering service. Caps (2.3), counted in this stack's Redis before anything is
+      sent: 8 pages an audit, 10 audits a UTC day, 900 pages (credits) a UTC month. Past a cap, or
+      if Firecrawl is shown the check too or answers the homepage with anything but a page
+      (HTTP 200), the audit fails with the same plain message. Every other site is crawled as
+      before. Each fallback audit logs one `firecrawl_fallback` line in the worker log (outcome
+      and page count, never the key); a cap that stopped it, or Firecrawl refusing the key (401)
+      or out of credits (402), logs it as a WARNING.
     - On such a site the site-health check sends nothing from this server: its sitemap and link
       checks are skipped (they would only meet the same wall, and a plain 403 would read as
       broken pages), its on-page checks still run, and it shows as limited by the bot check.
       robots.txt still comes from this server. PageSpeed is fetched by Google and is unaffected.
-    - The lasting fix is still on the host's side: SiteGround support must allow-list
-      173.255.206.170 (Site Tools has no setting for it).
+    - **SiteGround and this server today.** On 30 September SiteGround support exempted
+      173.255.206.170 for BLC's own site (www.builderleadconverter.com) and Rick's staging site.
+      Both answered the server with 200 on 1 October, and an audit of BLC's site crawled 10 of 10
+      pages. Every other SiteGround site still challenges the server, so prospects' SiteGround
+      sites are audited through the fallback (first checked on 2 October: 8 of 8 pages). An
+      exemption covers one site, and the site's account owner, or a collaborator on it, must ask
+      SiteGround support for it (Site Tools has no setting for it).
 
 ### 2.9 Deeper docs
 
@@ -602,10 +631,10 @@ The box is a ~4 GB, 2-CPU Linode that also serves the live **ai**, **events**,
 | Domain | **Done: `seo.builderleadconverter.com`.** A record to `173.255.206.170`, DNS only (Shayan). The parent's Caddy got its Let's Encrypt certificate (the first one runs to 2026-12-28) and renews it |
 | `BOOKING_URL` for the call-to-action | **Done: `https://www.builderleadconverter.com/contact-us/`**, the page BLC's own website sends its "Schedule a Call" buttons to. Set in the box's `.env` on 29 September and deployed with run 36593197666. To change it: [docs/OPERATIONS.md](docs/OPERATIONS.md) §2 (empty shows the label without a link) |
 | Abuse protection on `POST /audits` | **Edge limits in place:** per visitor, a burst of 3 audit starts, then 1 a minute; for everyone together, 20, then 10 a minute; over that, 429. Polling and reports are never limited. There is still no CAPTCHA or daily quota ([LIMITATIONS.md](docs/LIMITATIONS.md) §2) |
-| API keys | **Decided: `GOOGLE_PSI_API_KEY`**, copied from the ai app's `~/blc-social-audit/.env` (free Google quota, shared with ai), **plus this app's own `FIRECRAWL_API_KEY`** (Firecrawl's free plan, 1,000 credits a month) for the blocked-site fallback, added with the release that brings it (2.8, gotcha 10). The ai app's `YOUTUBE_API_KEY` was copied too at go-live; it is unused while social audits are off (`SOCIAL_AUDITS_ENABLED=false`) and can be emptied. `OPENAI_API_KEY`, `APIFY_API_TOKEN` and `GOOGLE_PLACES_API_KEY` stay empty, so those steps are skipped |
+| API keys | **Done: `GOOGLE_PSI_API_KEY`**, copied from the ai app's `~/blc-social-audit/.env` (free Google quota, shared with ai), **plus this app's own `FIRECRAWL_API_KEY`** (Firecrawl's free plan, 1,000 credits a month; unverified) for the blocked-site fallback, set on the box since 2 October (2.8, gotcha 10). The ai app's `YOUTUBE_API_KEY` was copied too at go-live and has since been emptied, as social audits are off (`SOCIAL_AUDITS_ENABLED=false`). `OPENAI_API_KEY`, `APIFY_API_TOKEN` and `GOOGLE_PLACES_API_KEY` stay empty, so those steps are skipped (all checked by name on 15 October) |
 | Semrush AI Visibility | **Decided: off** (`AI_VISIBILITY_ENABLED=false`, no Semrush values in `.env`). Semrush allows one live session per account, and a login here signs the parent's bot out; it needs a second seat |
-| Box capacity | Measured 29 Sep: 2.7 GB available of 3.9 GB, 20 GB disk free, plus 43 GB of old build cache. This stack idles near 340 MB (measured in the rehearsal). Enough for now; **8 GB is the comfortable size** once blogs and this edition both run (§7) |
-| Operator access (Clerk) | **Not set up.** `CLERK_ISSUER` is empty on the box, so the operator endpoints answer 403 (checked on 29 September: `/api/audits` 403) |
+| Box capacity | Measured 29 Sep: 2.7 GB available of 3.9 GB, 20 GB disk free, plus 43 GB of old build cache. Measured 15 Oct: about 1.6 GB available, 10 MB of the 2.5 GB swap in use, 20 GB disk free (74% used); a deploy needs 1200 MB and 8 GB (§6). This stack idles near 340 MB (measured in the rehearsal). Enough for now; **8 GB is the comfortable size** once blogs and this edition both run (§7) |
+| Operator access (Clerk) | **Not set up.** `CLERK_ISSUER` is empty on the box (still on 15 October), so the operator endpoints answer 403 (checked on 29 September: `/api/audits` 403) |
 | Public repository | This repo is public (the parent is private). Its code is readable by anyone; secrets never are |
 
 ## 4. What is in this repository
@@ -657,7 +686,8 @@ git config core.sshCommand "ssh -i ~/.ssh/blc_apps_github -o IdentitiesOnly=yes"
 
 On 29 September the box's `.env` became the example plus a fresh hex `POSTGRES_PASSWORD`, and
 `GOOGLE_PSI_API_KEY` and `YOUTUBE_API_KEY` copied from `~/blc-social-audit/.env`. `BOOKING_URL`
-followed before the second deploy (§3). Everything else is as in the example.
+followed before the second deploy (§3). Everything else is as in the example. Since then,
+`FIRECRAWL_API_KEY` has been added and `YOUTUBE_API_KEY` emptied (2.3).
 
 ```bash
 cd ~/blc-rick-seo-agent
@@ -816,7 +846,8 @@ after checking `free -m`.
 **When to grow the box.** Everything together is the ai app (Chromium), events, reactivation,
 board, blogs and this edition. That fits in 4 GB at idle, but two audits running at once (ai and
 seo) push into swap. Resizing the Linode to 8 GB is the comfortable fix. It is a short reboot of
-every app, so Darius schedules it.
+every app, so Darius schedules it. The reboot of 12 October showed that this stack comes back on
+its own after one (`unless-stopped`, 2.2).
 
 **Disk.** Build cache grows with every deploy of every app (43 GB of it on 29 September). Prune
 what is old, only under the shared deploy lock:
