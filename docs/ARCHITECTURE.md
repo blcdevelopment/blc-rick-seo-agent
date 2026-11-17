@@ -452,10 +452,11 @@ operate the tool see [`OPERATOR_GUIDE.md`](OPERATOR_GUIDE.md).
 
 ## 9. Deployment
 
-This edition deploys to **https://seo.builderleadconverter.com** on the parent's shared Linode,
+This edition deploys to **https://visllm.builderleadconverter.com** (and its first address,
+https://seo.builderleadconverter.com) on the parent's shared Linode,
 as compose project `blc-rick-seo-agent`, through the manual **Deploy** workflow and
 `deploy/deploy.sh` (they use the `RICK_DEPLOY_*` secrets). The parent's Caddy terminates TLS and
-routes the hostname to this stack's only container on the shared `blc-edge` network: the nginx
+routes both hostnames to this stack's only container on the shared `blc-edge` network: the nginx
 edge proxy `rick-edge`. It strips `/api`, passes the visitor's address and https on, and
 rate-limits audit starts. The api, worker, frontend and datastores stay on the project's own
 network, under memory ceilings.

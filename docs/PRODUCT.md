@@ -21,8 +21,9 @@ the full report.
 - **Audience of the report:** home builders, remodelers and local service businesses — the wording
   in `prompts/` and the rubric remediation text assumes that reader.
 - **Users of the tool:** public visitors, no sign-in. Operator endpoints (history, reruns, share
-  links, metrics) stay Clerk-gated at the API. Live at https://seo.builderleadconverter.com
-  since 2026-09-29 — see [DEPLOYMENT.md](../DEPLOYMENT.md).
+  links, metrics) stay Clerk-gated at the API. Live since 2026-09-29, now at
+  https://visllm.builderleadconverter.com (the first address, https://seo.builderleadconverter.com,
+  still works) — see [DEPLOYMENT.md](../DEPLOYMENT.md).
 - **Core promise:** *the numbers are defensible*. Scores come from deterministic rules over
   extracted facts, never from a language model. Identical facts always produce identical scores.
 
@@ -108,7 +109,8 @@ and **polish** (the PDF is presentable to a prospect, not a dev artifact).
   features — share links, per-client white-label branding, external-SEO re-run, AI-visibility
   refresh, audit history — remain API endpoints for Clerk-authenticated or local use and are hidden
   in the public build.
-- **Ops:** production compose for the parent's shared Linode box at seo.builderleadconverter.com,
+- **Ops:** production compose for the parent's shared Linode box at visllm.builderleadconverter.com
+  (and the first address, seo.builderleadconverter.com),
   behind an nginx edge proxy with audit-start rate limits; a deploy workflow (automatic on each
   reviewed merge to `main`, docs-only merges excepted) and script
   ([DEPLOYMENT.md](../DEPLOYMENT.md)); optional Sentry, gated `/metrics`, cron storage retention,
