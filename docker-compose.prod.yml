@@ -1,4 +1,5 @@
 # Production stack for the Rick edition (blc-rick-seo-agent) on the shared BLC Linode, served at
+# https://visllm.builderleadconverter.com and, for links already shared, at
 # https://seo.builderleadconverter.com. deploy/deploy.sh runs it; by hand it is
 #
 #   docker compose -p blc-rick-seo-agent -f docker-compose.prod.yml <command>
@@ -6,8 +7,8 @@
 # The box also runs the live ai (blc-social-audit), events, reactivation and board apps, so this
 # stack follows the box's rules (DEPLOYMENT.md §2):
 #   * No Caddy of its own and no public port. blc-social-audit's Caddy owns 80/443, terminates
-#     TLS, and proxies seo.builderleadconverter.com to `blc-rick-edge:80` over the external
-#     `blc-edge` network.
+#     TLS, and proxies visllm.builderleadconverter.com and seo.builderleadconverter.com to
+#     `blc-rick-edge:80` over the external `blc-edge` network.
 #   * Exactly ONE container joins blc-edge: `rick-edge` (nginx, deploy/edge/rick-edge.conf).
 #     Docker registers every service name as a hostname on each network the service joins, and
 #     the parent's Caddy looks up its own `api` and `frontend` on blc-edge first. A service here
@@ -76,9 +77,11 @@ services:
       PUBLIC_AUDITS_ENABLED: "true"
       SEARCH_CONSOLE_ENABLED: "false"
       SOCIAL_AUDITS_ENABLED: "false"
-      # Same-origin in prod (UI + /api on one domain), but keep CORS correct anyway.
+      # The UI calls the API on the main domain (NEXT_PUBLIC_API_BASE_URL below). The first
+      # domain, seo.builderleadconverter.com, still serves the same UI for links already
+      # shared, and its pages call the API on the main domain, so it is allowed here too.
       # RICK_DOMAIN exists only so a local rehearsal can use another hostname.
-      API_CORS_ORIGINS: https://${RICK_DOMAIN:-seo.builderleadconverter.com}
+      API_CORS_ORIGINS: https://${RICK_DOMAIN:-visllm.builderleadconverter.com},https://seo.builderleadconverter.com
       # Optional here: visitors never sign in, and with PUBLIC_AUDITS_ENABLED + APP_ENV=production
       # an empty CLERK_ISSUER makes the operator endpoints answer 403 (apps/api/auth.py).
       CLERK_ISSUER: ${CLERK_ISSUER:-}
@@ -153,7 +156,7 @@ services:
       context: ./apps/frontend
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_API_BASE_URL: https://${RICK_DOMAIN:-seo.builderleadconverter.com}/api
+        NEXT_PUBLIC_API_BASE_URL: https://${RICK_DOMAIN:-visllm.builderleadconverter.com}/api
         NEXT_PUBLIC_APP_NAME: "BLC Website Audit"
         # Public build: renders without Clerk, so the Clerk keys below are not needed.
         NEXT_PUBLIC_PUBLIC_AUDITS_ENABLED: "true"

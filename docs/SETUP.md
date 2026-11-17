@@ -1,6 +1,6 @@
 # Developer setup
 
-Local development on macOS/Linux. Deploying to https://seo.builderleadconverter.com is in
+Local development on macOS/Linux. Deploying to https://visllm.builderleadconverter.com is in
 [DEPLOYMENT.md](../DEPLOYMENT.md), and day-2 operations are in [OPERATIONS.md](OPERATIONS.md).
 
 ---
