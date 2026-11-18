@@ -1,6 +1,6 @@
 name: Deploy
 
-# Deploys main to the shared BLC Linode (https://visllm.builderleadconverter.com), the way
+# Deploys main to the shared BLC Linode (https://seo.builderleadconverter.com), the way
 # blc-board, blc-ep, blc-dr and blc-blogs are deployed: the committed deploy/deploy.sh is streamed
 # over SSH with the exact commit, and the box builds and starts only this stack
 # (DEPLOYMENT.md §5).
@@ -87,7 +87,7 @@ jobs:
     timeout-minutes: 75
     environment:
       name: production
-      url: https://visllm.builderleadconverter.com
+      url: https://seo.builderleadconverter.com
     steps:
       - name: Check out repository
         uses: actions/checkout@v4

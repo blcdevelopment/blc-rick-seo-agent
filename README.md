@@ -5,8 +5,7 @@ signing in; the site crawls it, measures it, scores it against versioned YAML ru
 branded **teaser** report (web page, PDF and DOCX): the problems and scores, none of the fixes, and
 a "Book a meeting with Rick" call-to-action. Social media is not part of this edition's audit.
 
-**Status:** live since 2026-09-29, at **https://visllm.builderleadconverter.com** since November
-2026 (the first address, https://seo.builderleadconverter.com, still works), on the parent's
+**Status:** live at **https://seo.builderleadconverter.com** since 2026-09-29, on the parent's
 shared box; how it runs and deploys is in [DEPLOYMENT.md](DEPLOYMENT.md). This repo is a separate copy of
 `blcdevelopment/blc-social-audit` (the live app at https://ai.builderleadconverter.com). Nothing here may deploy to that app or share
 its database, domain or compose project.

@@ -1,9 +1,8 @@
 # Operations
 
 Day-2 runbook for the Rick edition: changing settings, the cron jobs, the Semrush session behind AI
-Visibility, and troubleshooting. The edition is live at **https://visllm.builderleadconverter.com**
-(since 2026-09-29, first at https://seo.builderleadconverter.com, which still works)
-on the parent's shared box; [DEPLOYMENT.md](../DEPLOYMENT.md) describes the
+Visibility, and troubleshooting. The edition is live at **https://seo.builderleadconverter.com**
+(since 2026-09-29) on the parent's shared box; [DEPLOYMENT.md](../DEPLOYMENT.md) describes the
 server (Part 1), how this app runs and deploys (Part 2), the box's rules and the go-live record.
 Server commands assume the checkout at `~/blc-rick-seo-agent` and the compose project
 `blc-rick-seo-agent`. The parent's live stack has its own runbook in
@@ -16,7 +15,7 @@ Server commands assume the checkout at `~/blc-rick-seo-agent` and the compose pr
 | Piece | Value |
 |---|---|
 | Host | The parent's Linode VM (shared with ai, events, reactivation, board and blogs) |
-| Domain | `visllm.builderleadconverter.com`, plus the first address `seo.builderleadconverter.com` so links already shared keep working; the parent's Caddy routes both to `blc-rick-edge:80` over the `blc-edge` network ([DEPLOYMENT.md](../DEPLOYMENT.md) §2) |
+| Domain | `seo.builderleadconverter.com`; the parent's Caddy routes it to `blc-rick-edge:80` over the `blc-edge` network ([DEPLOYMENT.md](../DEPLOYMENT.md) §2) |
 | Orchestration | `docker-compose.prod.yml`, project `blc-rick-seo-agent` |
 | Repo on the box | `~/blc-rick-seo-agent` |
 | `.env` | `~/blc-rick-seo-agent/.env` (gitignored, box-only, `chmod 600`) |

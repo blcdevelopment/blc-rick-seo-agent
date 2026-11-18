@@ -35,7 +35,7 @@ main() {
   EDGE_SERVICE="rick-edge"
   EDGE_ALIAS="blc-rick-edge"
   BUILT_SERVICES="api worker frontend"
-  PUBLIC_HEALTH_URL="${BLC_RICK_PUBLIC_HEALTH_URL:-https://visllm.builderleadconverter.com/api/health}"
+  PUBLIC_HEALTH_URL="${BLC_RICK_PUBLIC_HEALTH_URL:-https://seo.builderleadconverter.com/api/health}"
   # The first deploy runs before the parent's Caddy has the route; set this to 1 for it only.
   SKIP_PUBLIC_CHECK="${BLC_RICK_SKIP_PUBLIC_CHECK:-0}"
   # Headroom required before building: `next build` and the Playwright install peak near 1 GB,
