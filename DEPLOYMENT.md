@@ -18,6 +18,8 @@ the workflow does.
 > **Verified on the live server on 29 September 2026.** The same text sits in `blc-ep`, `blc-dr`,
 > `blc-board`, `blc-blogs`, `blc-social-audit` and `blc-rick-seo-agent`. When the server changes,
 > update it in all six together, and re-date this line.
+> Addresses updated on 18 November 2026: the ai app moved to `visllm.builderleadconverter.com`, and
+> `ai.builderleadconverter.com` redirects there.
 
 ### 1.1 One server, six apps
 
@@ -33,7 +35,7 @@ Every BLC web app runs on one Linode, **`173.255.206.170`**: Ubuntu 24.04, 2 vCP
 
 | Site | App (repository) | Compose project | Checkout on the box | Entry point Caddy uses |
 |---|---|---|---|---|
-| `ai.builderleadconverter.com` | Website audit, internal (`blc-social-audit`) | `blc-social-audit` | `~/blc-social-audit` | its own `api:8000` (`/api/*`, prefix stripped) and `frontend:3000` |
+| `visllm.builderleadconverter.com` (visLLM); `ai.builderleadconverter.com` redirects here | Website audit, internal (`blc-social-audit`) | `blc-social-audit` | `~/blc-social-audit` | its own `api:8000` (`/api/*`, prefix stripped) and `frontend:3000` |
 | `events.builderleadconverter.com` | Event request bot (`blc-ep`) | `blc-stack` | `~/blc-chat/blc-ep` | `blc-ep-app:8000` |
 | `reactivation.builderleadconverter.com` | Database reactivation bot (`blc-dr`) | `blc-stack` | `~/blc-chat/blc-dr` | `blc-dr-app:8000` |
 | `board.builderleadconverter.com` | Leads board (`blc-board`) | `blc-stack` | `~/blc-chat/blc-board` | `blc-board-app:8030` |
@@ -52,7 +54,8 @@ Internet ──► 173.255.206.170 :80 / :443
                  ▼
    blc-social-audit's Caddy  (the ONLY process on host ports 80/443; Let's Encrypt; HTTP -> HTTPS)
                  │  chooses the app by hostname, then connects over the Docker network "blc-edge"
-                 ├─ ai ............ api:8000 / frontend:3000   (on Caddy's own project network)
+                 ├─ visllm ........ api:8000 / frontend:3000   (on Caddy's own project network)
+                 ├─ ai ............ 308 redirect to visllm, same path
                  ├─ events ........ blc-ep-app:8000
                  ├─ reactivation .. blc-dr-app:8000
                  ├─ board ......... blc-board-app:8030
@@ -214,7 +217,7 @@ These live in the crontab of user `abdullah`. Times are UTC; the box had no cron
 ### 1.7 Health checks
 
 ```text
-https://ai.builderleadconverter.com/api/health            https://events.builderleadconverter.com/api/health
+https://visllm.builderleadconverter.com/api/health        https://events.builderleadconverter.com/api/health
 https://reactivation.builderleadconverter.com/api/health  https://board.builderleadconverter.com/api/health
 https://blogs.builderleadconverter.com/health/ready       https://seo.builderleadconverter.com/api/health
 ```
@@ -579,7 +582,7 @@ Internet ──► 173.255.206.170 :80/:443
                ▼
       blc-social-audit's Caddy (the box's ONLY web server; owns 80/443; Let's Encrypt)
                │  by hostname, over the shared Docker network `blc-edge`
-               ├─ ai.builderleadconverter.com            ─► social-audit api / frontend
+               ├─ visllm.builderleadconverter.com        ─► social-audit api / frontend
                ├─ events / reactivation / board          ─► blc-ep-app / blc-dr-app / blc-board-app
                ├─ blogs.builderleadconverter.com         ─► blc-blogs-edge
                └─ seo.builderleadconverter.com           ─► blc-rick-edge:80
@@ -617,7 +620,7 @@ The box is a ~4 GB, 2-CPU Linode that also serves the live **ai**, **events**,
    Compose *service name* as a hostname on every network the service joins, next to its
    explicit aliases. The parent's Caddy sits on `blc-edge` and on its own network, and it looks
    names up on `blc-edge` first. So a service of ours called `api` or `frontend` on `blc-edge`
-   would take over `ai.builderleadconverter.com`'s own `reverse_proxy api:8000` /
+   would take over `visllm.builderleadconverter.com`'s own `reverse_proxy api:8000` /
    `frontend:3000`. This was reproduced on 29 September, and the live box shows those
    service-name aliases (`board`, `blc-ep`, `blc-dr`) on `blc-edge`.
    - Only `rick-edge` (alias `blc-rick-edge`) joins it.
