@@ -225,8 +225,9 @@ suspend the account — a business-risk decision the operator owns. Keep volume 
   This edition uses one of the parent's keys, `GOOGLE_PSI_API_KEY` (shared free quota). The
   `YOUTUBE_API_KEY` copied with it at go-live is unused while social audits are off and can be
   emptied; OpenAI, Apify and Places are not set here. `FIRECRAWL_API_KEY` (the blocked-site
-  fallback), when set, is this app's own: it is sent only to Firecrawl, over https, in a header,
-  and never logged.
+  fallback) is shared with the ai app since 18 November 2026 (a copy in `~/blc-social-audit/.env`;
+  rotate it in both files). It is sent only to Firecrawl, over https, in a header, and never
+  logged.
 - **No Google OAuth tokens are stored** (Search Console is off).
 - **API keys never ride in URLs** and the HTTP client loggers are held at WARNING, so credentials
   don't reach the logs. `/docs`, `/redoc` and `/openapi.json` are disabled when
