@@ -1,7 +1,6 @@
 # Deployment — Rick edition
 
-**Status: live since 2026-09-29 15:42 UTC**, at **https://visllm.builderleadconverter.com** since
-November 2026 (the first address, https://seo.builderleadconverter.com, still works; §9), on the
+**Status: live since 2026-09-29 15:42 UTC** at **https://seo.builderleadconverter.com**, on the
 shared BLC Linode next to the other apps. It went live at commit `8719e4a` (the merge of PR #2);
 `~/.blc-rick-seo-agent-deployed` on the box names the commit of the last clean deploy. Part 1 below
 describes the shared server and Part 2 how this app runs and deploys. §5 is the go-live order as it
@@ -39,7 +38,7 @@ Every BLC web app runs on one Linode, **`173.255.206.170`**: Ubuntu 24.04, 2 vCP
 | `reactivation.builderleadconverter.com` | Database reactivation bot (`blc-dr`) | `blc-stack` | `~/blc-chat/blc-dr` | `blc-dr-app:8000` |
 | `board.builderleadconverter.com` | Leads board (`blc-board`) | `blc-stack` | `~/blc-chat/blc-board` | `blc-board-app:8030` |
 | `blogs.builderleadconverter.com` | Content platform (`blc-blogs`) | `blc-blogs` | `~/blc-blogs` | `blc-blogs-edge:80` |
-| `visllm.builderleadconverter.com`, and the first address `seo.builderleadconverter.com` | Public website audit, Rick edition (`blc-rick-seo-agent`) | `blc-rick-seo-agent` | `~/blc-rick-seo-agent` | `blc-rick-edge:80` |
+| `seo.builderleadconverter.com` | Public website audit, Rick edition (`blc-rick-seo-agent`) | `blc-rick-seo-agent` | `~/blc-rick-seo-agent` | `blc-rick-edge:80` |
 
 `blc-stack` is one Compose project for three apps and their shared PostgreSQL. It is defined in
 `blc-board/docker-compose.prod.yml` and builds `blc-ep` and `blc-dr` from the sibling folders in
@@ -58,7 +57,7 @@ Internet ──► 173.255.206.170 :80 / :443
                  ├─ reactivation .. blc-dr-app:8000
                  ├─ board ......... blc-board-app:8030
                  ├─ blogs ......... blc-blogs-edge:80  ── blogs' own Caddy ── api / frontend
-                 └─ visllm, seo ... blc-rick-edge:80   ── nginx (rate limits) ── api / frontend
+                 └─ seo ........... blc-rick-edge:80   ── nginx (rate limits) ── api / frontend
 ```
 
 The routes live in `blc-social-audit/Caddyfile`. Adding a site is a pull request there plus a DNS
@@ -217,7 +216,7 @@ These live in the crontab of user `abdullah`. Times are UTC; the box had no cron
 ```text
 https://ai.builderleadconverter.com/api/health            https://events.builderleadconverter.com/api/health
 https://reactivation.builderleadconverter.com/api/health  https://board.builderleadconverter.com/api/health
-https://blogs.builderleadconverter.com/health/ready       https://visllm.builderleadconverter.com/api/health
+https://blogs.builderleadconverter.com/health/ready       https://seo.builderleadconverter.com/api/health
 ```
 
 On the box, every container should be `Up`, and `(healthy)` where it has a health check.
@@ -278,8 +277,7 @@ docker inspect --format '{{.Name}} restarts={{.RestartCount}} oom={{.State.OOMKi
 
 ### 2.1 What it is
 
-- The public website audit, Rick edition, at **https://visllm.builderleadconverter.com** (its
-  first address, https://seo.builderleadconverter.com, still works). Live since
+- The public website audit, Rick edition, at **https://seo.builderleadconverter.com**. Live since
   2026-09-29 15:42 UTC, first at `8719e4a`. PRs #4-#8 have gone live since: the BLC favicon, the
   bot-check handling and the Firecrawl fallback (2.8, gotcha 10), and social media switched off.
 - A separate copy of `blc-social-audit` (the ai app) with four switches changed:
@@ -359,11 +357,10 @@ docker inspect --format '{{.Name}} restarts={{.RestartCount}} oom={{.State.OOMKi
     (`redis://redis:6379/0`); `LOCAL_REPORT_STORAGE_DIR` and `LOCAL_SCREENSHOT_STORAGE_DIR`; and the
     four switches in 2.1;
   - api only: `AUDIT_ENQUEUE_ENABLED=true` and
-    `API_CORS_ORIGINS=https://visllm.builderleadconverter.com,https://seo.builderleadconverter.com`
-    (pages served on the first address call the API on the main one);
+    `API_CORS_ORIGINS=https://seo.builderleadconverter.com`;
   - worker only: `CRAWLER_CONCURRENCY=1` and `PLAYWRIGHT_BROWSERS_PATH`.
 - **Baked into the frontend image at build time:**
-  `NEXT_PUBLIC_API_BASE_URL=https://visllm.builderleadconverter.com/api`, `NEXT_PUBLIC_APP_NAME`,
+  `NEXT_PUBLIC_API_BASE_URL=https://seo.builderleadconverter.com/api`, `NEXT_PUBLIC_APP_NAME`,
   `NEXT_PUBLIC_PUBLIC_AUDITS_ENABLED=true` and `NEXT_PUBLIC_SOCIAL_AUDITS_ENABLED=false`.
 - **Changing a value:** [docs/OPERATIONS.md](docs/OPERATIONS.md) §2 says which changes need a
   recreate and which a rebuild. A key or the booking link needs only a recreate:
@@ -438,7 +435,7 @@ Put `BLC_RICK_SKIP_PUBLIC_CHECK=1` in front only when the public route does not 
 - **A release that deployed fine but misbehaves:** revert its pull request, merge the revert, and
   run the Deploy workflow. The script only fast-forwards, so it cannot deploy an older commit.
 - **Taking the site offline at once**, keeping all data: stop the edge. Caddy then answers 502 for
-  `visllm` and `seo`, and the other sites carry on. Because of `unless-stopped`, a stopped edge stays stopped
+  `seo`, and the other sites carry on. Because of `unless-stopped`, a stopped edge stays stopped
   through a reboot until it is started again.
 
 ```bash
@@ -452,9 +449,9 @@ docker compose -p blc-rick-seo-agent -f docker-compose.prod.yml start rick-edge 
 ### 2.6 Health, logs and everyday commands
 
 ```bash
-curl -fsS https://visllm.builderleadconverter.com/api/health
+curl -fsS https://seo.builderleadconverter.com/api/health
 # {"status":"ok","app":"blc-website-audit","environment":"production"}
-curl -s -o /dev/null -w '%{http_code}\n' https://visllm.builderleadconverter.com/api/audits   # 403 is correct
+curl -s -o /dev/null -w '%{http_code}\n' https://seo.builderleadconverter.com/api/audits   # 403 is correct
 ```
 
 On the box:
@@ -530,8 +527,7 @@ docker compose -p blc-rick-seo-agent -f docker-compose.prod.yml start api worker
 8. **The Google PageSpeed key is the ai app's.** If it is rotated there, update this `.env` too,
    then recreate the api and the worker. The YouTube key copied with it at go-live has since been
    emptied.
-9. **The route lives in another repository:** the block for `visllm` and `seo` in
-   `blc-social-audit/Caddyfile`.
+9. **The route lives in another repository:** the `seo` block in `blc-social-audit/Caddyfile`.
 10. **Sites behind a bot check (SiteGround, Cloudflare).** The worker waits up to
     `CRAWLER_CHALLENGE_WAIT_SECONDS` (default 15) for the site's own check to let it through. If
     the check does not clear, or the site refuses the server (for example HTTP 403), the audit fails
@@ -586,7 +582,7 @@ Internet ──► 173.255.206.170 :80/:443
                ├─ ai.builderleadconverter.com            ─► social-audit api / frontend
                ├─ events / reactivation / board          ─► blc-ep-app / blc-dr-app / blc-board-app
                ├─ blogs.builderleadconverter.com         ─► blc-blogs-edge
-               └─ visllm / seo                           ─► blc-rick-edge:80
+               └─ seo.builderleadconverter.com           ─► blc-rick-edge:80
                                                               │
    compose project blc-rick-seo-agent                         ▼
    ┌────────────────────────────────────────────────────────────────────────────┐
@@ -644,7 +640,7 @@ The box is a ~4 GB, 2-CPU Linode that also serves the live **ai**, **events**,
 
 | Item | Status |
 |---|---|
-| Domain | **Done: `visllm.builderleadconverter.com`** (since November 2026): A record to `173.255.206.170`, DNS only (Shayan, 17 November). **The first address, `seo.builderleadconverter.com`, stays** (same kind of record, Shayan, September), so links already shared keep working. The parent's Caddy holds a Let's Encrypt certificate for each name and renews them |
+| Domain | **Done: `seo.builderleadconverter.com`.** A record to `173.255.206.170`, DNS only (Shayan). The parent's Caddy got its Let's Encrypt certificate (the first one runs to 2026-12-28) and renews it |
 | `BOOKING_URL` for the call-to-action | **Done: `https://www.builderleadconverter.com/contact-us/`**, the page BLC's own website sends its "Schedule a Call" buttons to. Set in the box's `.env` on 29 September and deployed with run 36593197666. To change it: [docs/OPERATIONS.md](docs/OPERATIONS.md) §2 (empty shows the label without a link) |
 | Abuse protection on `POST /audits` | **Edge limits in place:** per visitor, a burst of 3 audit starts, then 1 a minute; for everyone together, 20, then 10 a minute; over that, 429. Polling and reports are never limited. There is still no CAPTCHA or daily quota ([LIMITATIONS.md](docs/LIMITATIONS.md) §2) |
 | API keys | **Done: `GOOGLE_PSI_API_KEY`**, copied from the ai app's `~/blc-social-audit/.env` (free Google quota, shared with ai), **plus this app's own `FIRECRAWL_API_KEY`** (Firecrawl's free plan, 1,000 credits a month; unverified) for the blocked-site fallback, set on the box since 2 October (2.8, gotcha 10). The ai app's `YOUTUBE_API_KEY` was copied too at go-live and has since been emptied, as social audits are off (`SOCIAL_AUDITS_ENABLED=false`). `OPENAI_API_KEY`, `APIFY_API_TOKEN` and `GOOGLE_PLACES_API_KEY` stay empty, so those steps are skipped (all checked by name on 15 October) |
@@ -662,7 +658,7 @@ The box is a ~4 GB, 2-CPU Linode that also serves the live **ai**, **events**,
 | [deploy/deploy.sh](deploy/deploy.sh) | The deploy, run on the box (§6) |
 | [deploy/production.env.example](deploy/production.env.example) | The box's `.env`, with every value it needs |
 | [.github/workflows/deploy.yml](.github/workflows/deploy.yml) | Manual **Deploy** workflow: main only, runs the pre-commit checks on the exact commit, then SSHes in |
-| `blc-social-audit` → `Caddyfile` | The block for `visllm.builderleadconverter.com` and `seo.builderleadconverter.com` (in that repository) |
+| `blc-social-audit` → `Caddyfile` | The `seo.builderleadconverter.com` block (in that repository) |
 
 ## 5. Go-live, step by step (done on 29 September 2026)
 
@@ -681,11 +677,10 @@ Ask for one Cloudflare record, **DNS only (grey cloud)**, because Caddy issues i
 certificate:
 
 ```text
-visllm.builderleadconverter.com   A   173.255.206.170   DNS only
+seo.builderleadconverter.com   A   173.255.206.170   DNS only
 ```
 
-Check it before step 6: `dig +short visllm.builderleadconverter.com` prints `173.255.206.170`.
-At go-live the record was `seo.builderleadconverter.com`; it stays, next to `visllm` (§9).
+Check it before step 6: `dig +short seo.builderleadconverter.com` prints `173.255.206.170`.
 
 ### Step 2 — Clone on the box: done (`~/blc-rick-seo-agent`)
 
@@ -757,13 +752,12 @@ At this point the stack is running, but nothing public points at it yet.
 
 ### Step 6 — The route (a pull request to `blc-social-audit`): done
 
-The block is in `blc-social-audit`'s Caddyfile. That repository's PR #31 (`706f7ee`) added it
-for `seo.builderleadconverter.com` (`visllm.builderleadconverter.com` joined it in November
-2026, §9). It deployed automatically at 14:26-14:29 UTC on 29 September,
+The `seo.builderleadconverter.com` block is in `blc-social-audit`'s Caddyfile, added by that
+repository's PR #31 (`706f7ee`). It deployed automatically at 14:26-14:29 UTC on 29 September,
 before this app's first deploy. The recipe is to merge it **after steps 1 and 5**, at a quiet
 moment:
-- Its deploy validates the Caddyfile, then gracefully reloads Caddy. The certificate for a new
-  name arrives within about a minute, provided its DNS record resolves.
+- Its deploy validates the Caddyfile, then gracefully reloads Caddy. The certificate for `seo`
+  arrives within about a minute, provided the DNS record resolves.
 - Every merge to `blc-social-audit` rebuilds and restarts the ai app's api, worker and frontend,
   routing-only changes included. Its images get new IDs on every build because of build
   attestations, so moving `Caddyfile` and `deploy/` out of the build context did not stop the
@@ -775,9 +769,8 @@ moment:
 ### Step 7 — Verify: done (results in §9)
 
 ```bash
-curl -fsS https://visllm.builderleadconverter.com/api/health  # {"status":"ok",...,"environment":"production"}
-curl -fsS https://seo.builderleadconverter.com/api/health     # the first address answers too
-curl -s -o /dev/null -w '%{http_code}\n' https://visllm.builderleadconverter.com/api/audits   # 403: operator endpoint
+curl -fsS https://seo.builderleadconverter.com/api/health     # {"status":"ok",...,"environment":"production"}
+curl -s -o /dev/null -w '%{http_code}\n' https://seo.builderleadconverter.com/api/audits   # 403: operator endpoint
 for h in ai events reactivation board; do
   curl -s -o /dev/null -w "$h %{http_code}\n" https://$h.builderleadconverter.com/; done
 ```
@@ -836,10 +829,10 @@ up before each deploy's migrations.
 11. Tests and gracefully reloads the edge config.
 12. Waits up to 5 minutes for api, frontend and edge to be healthy and the worker to be running.
 13. Fetches `/api/health` through the edge, inside the box, then
-    `https://visllm.builderleadconverter.com/api/health` from outside.
+    `https://seo.builderleadconverter.com/api/health` from outside.
 14. On any failure after step 9, puts the `:rollback` images back. A migration is not undone.
     Until then the new containers are running. A release whose api cannot start leaves
-    the site down for up to about 5 minutes before the rollback; the other
+    seo.builderleadconverter.com down for up to about 5 minutes before the rollback; the other
     apps are unaffected. On success, records the commit in `~/.blc-rick-seo-agent-deployed` and
     drops the rollback tags.
 
@@ -880,7 +873,7 @@ cd ~/blc-rick-seo-agent
 docker compose -p blc-rick-seo-agent -f docker-compose.prod.yml down      # keeps the data volumes
 ```
 
-Then remove the block for `visllm` and `seo` from `blc-social-audit`'s Caddyfile with a
+Then remove the `seo.builderleadconverter.com` block from `blc-social-audit`'s Caddyfile with a
 pull request. Never add `-v` unless the data is meant to go: it deletes the database and every
 report.
 
@@ -960,22 +953,3 @@ Checked on the live server and in the Actions logs.
 7. **Left in place.** The test audits of example.com stay reachable only through their
    `/audit/<id>` links. Their report files are pruned after 90 days; audit rows are never pruned
    ([docs/LIMITATIONS.md](docs/LIMITATIONS.md) §8).
-
-### Address change to `visllm` (November 2026)
-
-The tool's name is visLLM, so its main address moved from `seo` to `visllm`. The first address
-stays, so links already shared keep working.
-
-1. **DNS (Shayan, 17 November 2026):** `visllm.builderleadconverter.com   A   173.255.206.170   DNS only`. The `seo`
-   record is unchanged.
-2. **Route:** `blc-social-audit`'s Caddyfile serves both names from one block,
-   `visllm.builderleadconverter.com, seo.builderleadconverter.com`, to `blc-rick-edge:80`.
-   Caddy holds a certificate for each.
-3. **This app:** the UI is built to call `https://visllm.builderleadconverter.com/api`, the API allows both
-   origins (pages served on `seo` call the API on `visllm`), and the deploy's public check uses
-   `visllm`.
-4. **Order:** DNS, then the route, then this app. In the other order the deploy's public check
-   fails, and the deploy rolls back.
-5. **Retiring `seo` later:** turn its name into a redirect in the Caddyfile (its own block with
-   `redir https://visllm.builderleadconverter.com{uri} permanent`), or remove it from the block and ask Shayan to delete
-   its DNS record. Then drop it from `API_CORS_ORIGINS` in `docker-compose.prod.yml`.
