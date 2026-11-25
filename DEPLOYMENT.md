@@ -20,6 +20,8 @@ the workflow does.
 > update it in all six together, and re-date this line.
 > Addresses updated on 18 November 2026: the ai app moved to `visllm.builderleadconverter.com`, and
 > `ai.builderleadconverter.com` redirects there.
+> Updated on 25 November 2026: the second outbound address (1.1), Firecrawl on ai and seo (1.4,
+> 1.9), seo's automatic deploys (1.5) and SiteGround (1.9).
 
 ### 1.1 One server, six apps
 
@@ -28,6 +30,10 @@ Every BLC web app runs on one Linode, **`173.255.206.170`**: Ubuntu 24.04, 2 vCP
 - **Firewall:** `ai-agents-linode-firewall` allows inbound 22 (SSH), 80, 443 and ICMP; everything
   else is dropped.
 - **SSH:** user `abdullah`, who is in the `docker` group.
+- **Outbound addresses:** the box also carries a second public IPv4, **`50.116.22.236`** (added by
+  Darius on 12 October). blogs (since 12 October) and the SEO autopilot app, `blc-seo-agent`
+  (since 6 November), send their outgoing requests from it. Every other app goes out from
+  `173.255.206.170`. Why: 1.9.
 - **DNS:** Cloudflare, owned by Shayan. Each site is an **A record to `173.255.206.170`, set to "DNS
   only" (grey cloud)**, because Caddy issues its own Let's Encrypt certificates and needs to answer
   the challenge itself.
@@ -143,8 +149,9 @@ so the other sites stay up.
   - seo is public, with no sign-in. Its staff-only endpoints answer 403.
   - events and reactivation are public request forms.
 - **Outside services:**
-  - ai and seo: Google PageSpeed and YouTube (seo shares ai's two free Google keys); Apify, Places
-    and OpenAI on ai only.
+  - ai and seo: Google PageSpeed and YouTube (seo shares ai's two free Google keys), and Firecrawl
+    for sites whose security blocks the server (one free plan: ai has used seo's key since
+    18 November); Apify, Places and OpenAI on ai only.
   - blogs: OpenAI, Semrush, SerpApi, Firecrawl, Gemini, Apify, and each client's WordPress, written
     as drafts only.
   - events and reactivation: OpenAI.
@@ -156,7 +163,7 @@ so the other sites stay up.
 | board, blc-ep, blc-dr | **a merge commit to `main`**: GitHub Actions `ci-cd.yml` deploys automatically | tests and a Docker build on the PR; a release gate (merge commits only, or a manual `workflow_dispatch`) | takes the lock, fast-forwards the checkout, builds **only that service** of `blc-stack`, recreates it, checks container health and the public `/api/health`, and restores the previous image on failure |
 | ai (`blc-social-audit`) | **every push to `main`**: `deploy.yml` deploys automatically | none that blocks a deploy: `pre-commit.yml` runs on the PR, but `main` is unprotected, so a PR with red checks can still be merged, and `deploy.yml` does not re-run the checks | takes the lock, resets to the commit, builds api, worker and frontend one at a time, runs `up -d`, attaches Caddy to `blc-edge`, validates and reloads the Caddyfile, then runs the `/health` gate (no automatic rollback) |
 | blogs | **manual**: Actions → Deploy → Run workflow (main only; CI must be green on that commit) | CI green | takes the lock; checks the plan, the `blc-edge` names, the edge config and the memory/disk headroom; builds both images tagged with the commit; backs up the database; starts, reloads the edge, checks health inside and publicly; restores the previous images on failure |
-| seo | **manual**: Actions → Deploy → Run workflow (main only; re-runs the repository's pre-commit checks on the exact commit) | checks | the same pattern as blogs: plan/name checks, `nginx -t`, headroom, database backup, 3 images built one at a time, edge reload, health inside and public, rollback |
+| seo | **a merge commit to `main`** (since 15 October): `deploy.yml` deploys automatically, except a merge that only touches Markdown or `docs/`; Actions → Deploy → Run workflow still deploys by hand | a release gate (merge commits only), then the repository's pre-commit checks re-run on the exact commit | the same pattern as blogs: plan/name checks, `nginx -t`, headroom, database backup, 3 images built one at a time, edge reload, health inside and public, rollback |
 
 - **GitHub:** all six repositories belong to the personal account **`blcdevelopment`**. Only that
   account can add secrets or change settings; developers are write collaborators.
@@ -172,7 +179,9 @@ so the other sites stay up.
   - board, blc-ep and blc-dr: a direct push of an ordinary commit never deploys (their release
     gate needs a merge commit) and opens an issue, but a merge commit pushed straight to `main`
     still deploys and is not flagged;
-  - blogs and seo: deploys are manual, from `main` only;
+  - blogs: deploys are manual, from `main` only;
+  - seo: its release gate refuses an ordinary commit pushed straight to `main`, so that never
+    deploys;
   - **ai (`blc-social-audit`) deploys every push to `main`, including a direct one.** Its
     `protect-main.yml` only turns red afterwards.
   - Always land changes through a pull request and a merge commit.
@@ -238,11 +247,13 @@ docker inspect --format '{{.Name}} restarts={{.RestartCount}} oom={{.State.OOMKi
 - **John:** GoHighLevel and operations.
 - **Code and deploys:** the BLC developers, through the repositories above.
 
-### 1.9 Known open items (30 September 2026)
+### 1.9 Known open items (30 September 2026; SiteGround updated 25 November)
 
 - **SiteGround's bot protection flags this server's address.** Its challenge URL carries
   `y=ipr:173.255.206.170` or `y=ipc:173.255.206.170` (seen since 29 September). By 30 September BLC's
-  own site answered this server with a plain 403.
+  own site answered this server with a plain 403. SiteGround judges an address across its whole
+  network, and the two audit apps, ai and seo, open a real browser on hundreds of other people's
+  sites from this one.
   - **Audits (ai and seo):** until the 30 September fix, an audit of such a site scored the challenge
     page instead of the site (BLC's own site on 29 September; callfinch.com on the ai app on
     28 August). Now the crawler waits up to `CRAWLER_CHALLENGE_WAIT_SECONDS` (15 s) for the site's own
@@ -250,12 +261,22 @@ docker inspect --format '{{.Name}} restarts={{.RestartCount}} oom={{.State.OOMKi
     clear, or the site refuses outright, the audit stops with a plain message instead of a report, and
     once a site's check blocks a page the crawler opens no more of its pages. On seo's 1-CPU worker the
     check often does not clear in time.
-  - **Blogs:** a recognised bot wall fails the delivery at once, with a message that says what to do,
-    instead of retrying for about half an hour. Press Retry after the host has whitelisted the server.
-  - **The real fix is on SiteGround's side.** Site Tools has no allow-list for its Anti-Bot AI. The
-    site's account owner, or a collaborator on the site, must ask SiteGround support to whitelist
-    173.255.206.170. This is needed for Rick's staging site (blogs) and BLC's own site. A site behind
-    Cloudflare may also need a Cloudflare IP Access "Allow" rule (Shayan).
+  - **The Firecrawl fallback (seo since 2 October, ai since 18 November):** when the check, or a
+    401/403, keeps the browser off the homepage, the audit fetches the pages through Firecrawl,
+    from Firecrawl's own addresses, and goes on. The report says the pages were fetched through a
+    rendering service. Caps per app: 8 pages an audit, 10 such audits a UTC day and 900 pages a
+    UTC month, on one free Firecrawl plan (1,000 credits a month) that the two apps share. The
+    audit still stops with the plain message if Firecrawl is blocked too, or a cap or the credits
+    run out.
+  - **blogs and `blc-seo-agent` leave from `50.116.22.236` (1.1),** which nothing on the box crawls
+    from, so SiteGround has not flagged it. blogs still fails a delivery at once on a recognised bot
+    wall, with a message that says what to do, instead of retrying for about half an hour.
+    **Never send ai's or seo's traffic from that address:** their browser crawls would get it
+    flagged too, and blogs and `blc-seo-agent` would then be blocked on every SiteGround site.
+  - **For `173.255.206.170` itself, only SiteGround can lift the flag.** Site Tools has no allow-list
+    for its Anti-Bot AI. The site's account owner, or a collaborator on the site, must ask SiteGround
+    support to whitelist the address. A site behind Cloudflare may also need a Cloudflare IP Access
+    "Allow" rule (Shayan).
 
 - There is no off-server backup copy, no uptime alerting and no Sentry.
 - Grow the box to 8 GB (Darius). Two browser audits at once, from ai and seo, push the box into swap.
